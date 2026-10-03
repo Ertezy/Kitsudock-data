@@ -247,3 +247,27 @@ test("Endfield: оператор находится и после 200 КБ об�
   const r = await runBounded<EndfieldResult>("../src/sources/banners.ts", "parseEndfieldTable", [row, ENDFIELD_URL]);
   assert.deepEqual(r.drafts[0]?.banner.featured, ["Real Name"]);
 });
+
+test("Endfield: название — первый <div class=\"header\"> с текстом до </div>, обрывки перед ним пропускаются", () => {
+  const row = ENDFIELD.replace('<div class="header" style="background:var(--wiki-accent-color); font-weight:bold; width:100%;">Winter Hunt', '<div class="header"><b>x</b></div><div class="header" <z>Winter Hunt');
+  assert.equal(parseEndfieldTable(row, ENDFIELD_URL).drafts[0]?.banner.title, "Winter Hunt");
+});
+
+test("Endfield: файл арта — первая ссылка [[File:Имя|, обрывки перед ней пропускаются", () => {
+  const row = ENDFIELD.replace("[[File:Winter Hunt banner.png|", "[[File:broken]] [[File:|x]] [[File:Winter Hunt banner.png|");
+  assert.equal(parseEndfieldTable(row, ENDFIELD_URL).drafts[0]?.imageFile, "Winter Hunt banner.png");
+});
+
+test("Endfield: 20 000 начал «<div class=header» без «>» читаются за линейное время", async () => {
+  const row = `<tr valign="top">${'<div class="header"'.repeat(20_000)}`;
+  const r = await runBounded<EndfieldResult>("../src/sources/banners.ts", "parseEndfieldTable", [row, ENDFIELD_URL]);
+  assert.deepEqual([r.parsed, r.dropped, r.drafts.length], [1, 1, 0]);
+});
+
+test("Endfield: 30 000 «[[File:» без «|» после годной строки — линейное время, файла нет", async () => {
+  const valid =
+    '<tr valign="top"><div class="header">Winter Hunt</div><b><abbr title="Americas / Europe">AM / EU</abbr>:</b> <span>Sep 01, 2026, 23:00 &ndash; Sep 30, 2026, 11:59 <span class="visually-hidden">(UTC+8)</span></span>';
+  const r = await runBounded<EndfieldResult>("../src/sources/banners.ts", "parseEndfieldTable", [valid + "[[File:".repeat(30_000), ENDFIELD_URL]);
+  assert.equal(r.drafts.length, 1);
+  assert.equal(r.drafts[0]!.imageFile, null);
+});

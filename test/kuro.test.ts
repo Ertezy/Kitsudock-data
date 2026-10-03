@@ -16,6 +16,7 @@ import {
   type KuroBannerFact,
 } from "../src/sources/kuro.ts";
 import type { Banner, HubData } from "../src/types.ts";
+import { runBounded } from "./bounded.ts";
 
 const utc = (y: number, mo: number, d: number, h: number, mi: number) => Date.UTC(y, mo - 1, d, h, mi) / 1000;
 const NOW = utc(2026, 9, 15, 12, 0);
@@ -464,4 +465,34 @@ test("баннер фандома с другими кавычками и про
     assert.equal(withKuroBanners(hubOf([wuwa(title, start + 3600)]), [kuro]).banners.length, 1, title);
   }
   assert.equal(withKuroBanners(hubOf([wuwa("Solo's Test Banner", start)]), [kuro]).banners.length, 2, "другое название — другой баннер");
+});
+
+const BLOCK_HEAD = "[X] Featured Resonator Convene";
+
+test("строки блока: пробелы и табы вокруг имени, «,», «!», «receive» и тире срока не мешают", () => {
+  const names = ["5-Star Resonator:   Aino   receive 100 pulls", "5-Star Resonator: Aino , receive", "5-Star Resonator:Aino! more", "5-Star Resonator: Aino"];
+  const durations = [
+    ["Version 3.7 Update  -  2026-09-30 11:59  (server time)", { kind: "release", version: "3.7" }],
+    ["2026-09-01 10:00\t-\t2026-09-30 11:59 (Server Time) extra", { kind: "at", at: utc(2026, 9, 1, 9, 0) }],
+  ] as const;
+  for (const name of names) {
+    for (const [duration, start] of durations) {
+      assert.deepEqual(kuroBannerFacts([BLOCK_HEAD, name, duration], null), [{ title: "X", featured: "Aino", start, endsAt: utc(2026, 9, 30, 10, 59) }], `${name} | ${duration}`);
+    }
+  }
+});
+
+test("статья: 50 000 «<p», 200 000 «<» и 20 000 «<br …» без «>» читаются за линейное время", async () => {
+  for (const content of ["<p".repeat(50_000), "<".repeat(200_000), `<br${" ".repeat(8)}x`.repeat(20_000)]) {
+    assert.deepEqual(await runBounded<string[] | null>("../src/sources/kuro.ts", "articleText", [{ articleContent: content }]), [content]);
+  }
+});
+
+test("строки блока: 60 000 пробелов внутри имени 5★, начала срока и заголовка читаются за линейное время", async () => {
+  const pad = " ".repeat(60_000);
+  const lines = [`5-Star Resonator:a${pad}b!`, `a${pad}-${pad}x`, `[a]${pad}]`, `[a]Featured${pad}Resonator Convene${pad}x`];
+  for (const line of lines) {
+    const facts = await runBounded<KuroBannerFact[]>("../src/sources/kuro.ts", "kuroBannerFacts", [[BLOCK_HEAD, line], null]);
+    assert.deepEqual(facts, [], line.slice(0, 20));
+  }
 });

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GAME_IDS, VIDEO_LANGS } from "../src/types.ts";
 import { CHANNELS, feedUrl, parseYoutubeFeed } from "../src/sources/videos.ts";
+import { runBounded } from "./bounded.ts";
 
 const entry = (id: string, published: string, title: string, channel = CHANNELS.en.endfield) => `
  <entry>
@@ -72,4 +73,15 @@ test("не больше шести роликов", () => {
 
 test("не лента — not found", () => {
   assert.equal(parseYoutubeFeed("<html>error</html>", "endfield", CHANNELS.en.endfield, "en").found, false);
+});
+
+test("незакрытый <entry> перед роликом не прячет его", () => {
+  const r = parseYoutubeFeed(`<feed><entry>мусор${entry("DgWvnA2NCm0", "2026-09-15T09:00:33+00:00", "Collab")}</feed>`, "endfield", CHANNELS.en.endfield, "en");
+  assert.deepEqual([r.parsed, r.videos.map((v) => v.title)], [1, ["Collab"]]);
+});
+
+test("50 000 незакрытых <entry> читаются за линейное время", async () => {
+  const xml = `<feed>${"<entry>".repeat(50_000)}</feed>`;
+  const r = await runBounded<ReturnType<typeof parseYoutubeFeed>>("../src/sources/videos.ts", "parseYoutubeFeed", [xml, "endfield", CHANNELS.en.endfield, "en"]);
+  assert.deepEqual([r.found, r.parsed, r.dropped, r.videos.length], [true, 0, 0, 0]);
 });

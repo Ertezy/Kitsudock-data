@@ -30,6 +30,23 @@ const ENTITIES: Record<string, string> = { "&amp;": "&", "&quot;": '"', "&#39;":
 const decode = (text: string) => text.replace(/&(?:amp|quot|#39|lt|gt);/g, (e) => ENTITIES[e] ?? e);
 const pick = (block: string, re: RegExp) => re.exec(block)?.[1];
 
+/**
+ * Содержимое каждого `<entry>…</entry>`. Прежнее ленивое выражение для каждого
+ * незакрытого `<entry>` заново читало текст до конца; здесь поиск идёт вперёд один раз,
+ * а когда закрытия больше нет, его нет и ни у одного следующего начала.
+ */
+function entryBlocks(xml: string): string[] {
+  const blocks: string[] = [];
+  for (let open = xml.indexOf("<entry>"); open !== -1; ) {
+    const from = open + "<entry>".length;
+    const close = xml.indexOf("</entry>", from);
+    if (close === -1) break;
+    blocks.push(xml.slice(from, close));
+    open = xml.indexOf("<entry>", close + "</entry>".length);
+  }
+  return blocks;
+}
+
 export function parseYoutubeFeed(
   xml: string,
   gameId: GameId,
@@ -40,9 +57,8 @@ export function parseYoutubeFeed(
   const videos: Video[] = [];
   let parsed = 0;
   let dropped = 0;
-  for (const m of xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)) {
+  for (const block of entryBlocks(xml)) {
     parsed++;
-    const block = m[1]!;
     const channel = pick(block, /<yt:channelId>([^<]+)<\/yt:channelId>/);
     const url = pick(block, /<link rel="alternate" href="([^"]+)"/);
     const title = pick(block, /<title>([^<]*)<\/title>/);

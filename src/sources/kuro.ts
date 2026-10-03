@@ -10,6 +10,7 @@
 import { atOffset, EUROPE_SERVER_OFFSET_MINUTES, parseIsoLike } from "../time.ts";
 import { GAME_IDS, type Banner, type HubData } from "../types.ts";
 import { bannerFits } from "../validate.ts";
+import { isSpace, replaceTags } from "../wikitext.ts";
 
 export const KURO_MENU_URL =
   "https://hw-media-cdn-mingchao.kurogame.com/akiwebsite/website2.0/json/G152/en/ArticleMenu.json";
@@ -130,6 +131,9 @@ const decodeEntities = (text: string) =>
     return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
   });
 
+// Начало тега, который означает перевод строки: `<br>`, `<br/>`, `<p …>`, `</div>`, `<li>`, `<h1>`…
+const BREAK_TAG = /<(?:br\s*\/?(?=>)|\/?(?:p|div|li|h[1-6])\b)/iy;
+
 /**
  * Текст статьи из JSON Kuro: теги убраны, <br>, <p>, <div>, <li> и <h1>–<h6> —
  * переводы строк, сущности раскрыты, пустые строки выброшены. Не объект или
@@ -140,8 +144,8 @@ export function articleText(article: unknown): string[] | null {
   const content = (article as { articleContent?: unknown }).articleContent;
   if (typeof content !== "string") return null;
   // Теги режутся до раскрытия сущностей: «&lt;b&gt;» должно остаться текстом.
-  const withBreaks = content.replace(/<br\s*\/?>|<\/?(?:p|div|li|h[1-6])\b[^>]*>/gi, "\n");
-  return decodeEntities(withBreaks.replace(/<[^>]*>/g, ""))
+  const withBreaks = replaceTags(content, "\n", BREAK_TAG);
+  return decodeEntities(replaceTags(withBreaks, ""))
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line !== "");
@@ -157,24 +161,79 @@ export function articleTitle(article: unknown): string | null {
 // Баннеры персонажей бывают обычные (Featured), повторные (Reverb) и совместные (Collab).
 const RESONATOR_HEAD = /^\[(.+?)\]\s*(?:Featured|Reverb|Collab)\s+Resonator Convene\s*$/i;
 const ANY_HEAD = /^\[.+?\]\s*(?:Featured|Reverb|Collab)\s+(?:Resonator|Weapon) Convene\s*$/i;
-const FEATURED = /5-Star Resonator:\s*([^,!]+?)\s*(?:,|receive|!|$)/i;
-const DURATION = /^(.+?)\s+-\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\s*\(server time\)/i;
+const FEATURED_LABEL = /5-Star Resonator:/gi;
+const RECEIVE = /receive/gi;
+// Конец срока после « - »: пробелы, дата и «(server time)». Липкое: проверяется с заданной позиции.
+const DURATION_END = /\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\s*\(server time\)/iy;
 const RELEASE_START = /^version\s+(\d+\.\d+)\s+update$/i;
 const MINUTE_STAMP = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/;
 const SELECTABLE = /selectable 5-Star Resonators?:/i;
+// Перевод строки: точка в выражениях ниже его не пересекает.
+const LINE_BREAK = /[\n\r\u2028\u2029]/;
+
+/**
+ * Имя после «5-Star Resonator:» — до «,», «!», слова «receive» или конца строки, без
+ * пробелов по краям. Это `/5-Star Resonator:\s*([^,!]+?)\s*(?:,|receive|!|$)/i`, но без
+ * перебора: там `\s*` и `[^,!]+?` делили между собой каждую серию пробелов внутри
+ * имени заново. Если после метки сразу «,», «!» или конец, имени нет; единственный
+ * пробел перед ними выражение считало именем — так оставлено.
+ */
+function featuredName(line: string): string | undefined {
+  FEATURED_LABEL.lastIndex = 0;
+  for (let label = FEATURED_LABEL.exec(line); label !== null; label = FEATURED_LABEL.exec(line)) {
+    const after = FEATURED_LABEL.lastIndex;
+    let stop = after; // первая «,» или «!» либо конец строки
+    while (stop < line.length && line[stop] !== "," && line[stop] !== "!") stop++;
+    let name = after; // начало имени после пробелов
+    while (name < stop && isSpace(line[name]!)) name++;
+    if (name === stop) {
+      if (name > after) return line[name - 1];
+      continue;
+    }
+    RECEIVE.lastIndex = name + 1;
+    const receive = RECEIVE.exec(line);
+    let end = receive !== null && receive.index < stop ? receive.index : stop;
+    while (end > name + 1 && isSpace(line[end - 1]!)) end--;
+    return line.slice(name, end);
+  }
+  return undefined;
+}
+
+/**
+ * «Начало - 2026-09-30 11:59 (server time)» → [начало, конец]; null, если такого нет. Это
+ * `/^(.+?)\s+-\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\s*\(server time\)/i`, но без перебора:
+ * там `.+?` и `\s+` делили каждую серию пробелов внутри начала заново. Начало кончается
+ * там, где перед очередным « - » начинается пробельная серия (но не раньше первого символа).
+ */
+function durationOf(line: string): [string, string] | null {
+  const lineBreak = line.search(LINE_BREAK);
+  for (let dash = line.indexOf("-"); dash !== -1; dash = line.indexOf("-", dash + 1)) {
+    if (dash === 0 || !isSpace(line[dash - 1]!)) continue;
+    let gap = dash - 1; // начало пробельной серии перед «-»
+    while (gap > 0 && isSpace(line[gap - 1]!)) gap--;
+    const end = Math.max(gap, 1);
+    if (end >= dash) continue;
+    DURATION_END.lastIndex = dash + 1;
+    const m = DURATION_END.exec(line);
+    if (m === null) continue;
+    // Начало не должно содержать перевода строки; у следующих « - » оно только длиннее.
+    return lineBreak !== -1 && lineBreak < end ? null : [line.slice(0, end), m[1]!];
+  }
+  return null;
+}
 
 /** Баннер персонажа из блока строк под его заголовком; null — имени 5★ или понятных дат нет. */
 function blockFact(title: string, block: string[]): KuroBannerFact | null {
-  const named = block.map((line) => FEATURED.exec(line)?.[1]).find((name) => name !== undefined);
+  const named = block.map(featuredName).find((name) => name !== undefined);
   // У повторного баннера (Reverb) 5★ персонажа игрок выбирает из списка — одного имени нет,
   // и баннер показывается без имён (пустая строка).
   const featured = named ?? (block.some((line) => SELECTABLE.test(line)) ? "" : undefined);
-  const duration = block.map((line) => DURATION.exec(line)).find((m) => m !== null && m !== undefined);
+  const duration = block.map(durationOf).find((range) => range !== null);
   if (featured === undefined || !duration) return null;
-  const endParts = parseIsoLike(duration[2]!);
+  const endParts = parseIsoLike(duration[1]);
   if (!endParts) return null;
   const endsAt = atOffset(endParts, EUROPE_SERVER_OFFSET_MINUTES);
-  const from = duration[1]!.trim();
+  const from = duration[0].trim();
   const release = RELEASE_START.exec(from);
   if (release) return { title, featured, start: { kind: "release", version: release[1]! }, endsAt };
   // Только «ГГГГ-ММ-ДД ЧЧ:ММ»: голая дата у parseIsoLike означала бы конец дня.

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { findTemplates, plainText, rewardsText, splitTopLevel, stripComments, templateParams, type TemplateParams } from "../src/wikitext.ts";
+import { findTemplates, plainText, rewardsText, splitTopLevel, replaceTags, stripComments, templateParams, type TemplateParams } from "../src/wikitext.ts";
 import { runBounded } from "./bounded.ts";
 
 const GENSHIN = `{{Code Row/Header}}<!--
@@ -119,4 +119,29 @@ test("незакрытая {{ внутри nowiki выше строк не пр�
 
 test("незакрытая {{ между строками не прячет ни предыдущую, ни следующую", () => {
   assert.deepEqual(findTemplates(`${ROW_A}\n{{Broken\n${ROW_B}`, "Code Row"), [INNER_A, INNER_B]);
+});
+
+test("вызов с пробелами и переводом строки вокруг имени находится, похожее имя — нет", () => {
+  assert.deepEqual(findTemplates("{{  Code Row \n|x}} {{Code Row|y}} {{Code Rows|z}} {{Code}}", "Code Row"), ["  Code Row \n|x", "Code Row|y"]);
+});
+
+test("заголовок вложенных {{ с общей серией пробелов перед | сверяется за линейное время", async () => {
+  const text = "{{".repeat(50_000) + " ".repeat(200_000) + "|" + "}}".repeat(50_000);
+  assert.deepEqual(await runBounded<string[]>("../src/wikitext.ts", "findTemplates", [text, "Code Row"]), []);
+});
+
+test("replaceTags: тег — от < до ближайшей >, <> тегом считается, только если не nonEmpty", () => {
+  assert.equal(replaceTags("a<b>c<>d<e", "-"), "a-c-d<e");
+  assert.equal(replaceTags("a<b>c<>d<e", "-", /</y, true), "a-c<>d<e");
+  assert.equal(replaceTags("x<p>y<b>z</p>", "|", /<\/?p\b/iy), "x|y<b>z|");
+});
+
+test("простой текст: ссылки с подписью и без, пустой <> остаётся, теги — пробелом, незакрытая [[ остаётся", () => {
+  assert.equal(plainText("a <> b [[x]] [[y|z|w]] <p class=q>t</p> [[open"), "a <> b x z|w t [[open");
+});
+
+test("простой текст: цепочки «[[» и «<» без закрытия читаются за линейное время", async () => {
+  for (const text of ["[[".repeat(50_000), "<".repeat(200_000), "<a ".repeat(60_000)]) {
+    assert.equal(await runBounded<string>("../src/wikitext.ts", "plainText", [text]), text.trim());
+  }
 });

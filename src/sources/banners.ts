@@ -98,8 +98,6 @@ export function recentBannerPages(titles: string[], now: number, days = 60): str
 const ENTITIES: Record<string, string> = { "&amp;": "&", "&quot;": '"', "&#39;": "'", "&lt;": "<", "&gt;": ">", "&nbsp;": " " };
 const decode = (text: string) => text.replace(/&(?:amp|quot|#39|lt|gt|nbsp);/g, (e) => ENTITIES[e] ?? e);
 
-const EF_TITLE = /<div class="header"[^>]*>([^<]+)<\/div>/;
-const EF_FILE = /\[\[File:([^|\]]+)\|/;
 // Срок берётся целиком, от `<span>` до скрытого `<span>` со смещением, и режется по
 // «&ndash;» уже в коде (splitRange): ленивые группы по обе стороны от разделителя
 // на длинной строке перебирали бы все его положения.
@@ -110,6 +108,29 @@ const EF_LINK_OPEN = /\s*\[\[/y;
 
 const SPAN_END = "</span>";
 const DASH = "&ndash;";
+const HEADER_OPEN = '<div class="header"';
+const DIV_END = "</div>";
+const FILE_OPEN = "[[File:";
+
+/**
+ * Название баннера: текст от `>` первого `<div class="header"…>` до `</div>`. Прежнее
+ * выражение для каждого `<div class="header"` заново искало `>`, и на длинной цепочке
+ * таких начал без `>` каждое перечитывало остаток строки. Ближайшая `>` общая для всех
+ * начал до неё, поэтому проверяется один раз.
+ */
+function headerTitle(row: string): string | undefined {
+  let checked = -1; // `>`, с которой уже сверялось предыдущее начало
+  for (let at = row.indexOf(HEADER_OPEN); at !== -1; at = row.indexOf(HEADER_OPEN, at + HEADER_OPEN.length)) {
+    const from = at + HEADER_OPEN.length;
+    if (from <= checked) continue; // та же `>`, а с ней предыдущее начало не подошло
+    const tagEnd = row.indexOf(">", from);
+    if (tagEnd === -1) return undefined;
+    checked = tagEnd;
+    const textEnd = row.indexOf("<", tagEnd + 1);
+    if (textEnd > tagEnd + 1 && row.startsWith(DIV_END, textEnd)) return row.slice(tagEnd + 1, textEnd);
+  }
+  return undefined;
+}
 
 /** Индекс первого `]` или `|` начиная с from; -1, если их больше нет. */
 function nextLinkEnd(text: string, from: number): number {
@@ -117,6 +138,18 @@ function nextLinkEnd(text: string, from: number): number {
     if (text[j] === "]" || text[j] === "|") return j;
   }
   return -1;
+}
+
+/** Имя файла из первой ссылки `[[File:Имя|…`; конец имени ищется так же, как у оператора ниже. */
+function fileName(row: string): string | undefined {
+  let end = -2; // -2 — ещё не искали, -1 — `]` и `|` больше нет
+  for (let at = row.indexOf(FILE_OPEN); at !== -1; at = row.indexOf(FILE_OPEN, at + FILE_OPEN.length)) {
+    const from = at + FILE_OPEN.length;
+    if (end !== -1 && end < from) end = nextLinkEnd(row, from);
+    if (end === -1) return undefined;
+    if (end > from && row[end] === "|") return row.slice(from, end);
+  }
+  return undefined;
 }
 
 /**
@@ -151,7 +184,7 @@ export function parseEndfieldTable(expanded: string, pageUrl: string): { drafts:
   const drafts: BannerDraft[] = [];
   let dropped = 0;
   for (const row of rows) {
-    const title = EF_TITLE.exec(row)?.[1];
+    const title = headerTitle(row);
     const times = EF_TIMES.exec(row);
     const limited = row.split("Limited operators:")[1] ?? "";
     const operator = firstOperator(limited);
@@ -186,7 +219,7 @@ export function parseEndfieldTable(expanded: string, pageUrl: string): { drafts:
         endsAt,
         url: pageUrl,
       },
-      imageFile: EF_FILE.exec(row)?.[1]?.trim() ?? null,
+      imageFile: fileName(row)?.trim() ?? null,
     });
   }
   return { drafts, parsed: rows.length, dropped };

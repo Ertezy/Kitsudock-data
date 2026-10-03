@@ -42,6 +42,29 @@ function nextSeparator(text: string, from: number): number {
   return -1;
 }
 
+const SPACE = /\s/;
+
+/** Пробельный ли символ: тот же набор, что у `\s` и trim. */
+export const isSpace = (char: string) => SPACE.test(char);
+
+/** Индекс первого не пробельного символа в [from, to); to, если там одни пробелы. */
+function skipSpaces(text: string, from: number, to: number): number {
+  let j = from;
+  while (j < to && isSpace(text[j]!)) j++;
+  return j;
+}
+
+/**
+ * Равен ли текст [from, to) без пробелов по краям строке name (она без пробелов по краям).
+ * Сравнивается на месте, без среза и trim: на цепочке вложенных `{{` общий конец заголовка
+ * один, и trim снова и снова перечитывал бы одну и ту же серию пробелов перед ним.
+ */
+function isTemplateHead(text: string, from: number, to: number, name: string): boolean {
+  const start = skipSpaces(text, from, to);
+  const stop = start + name.length;
+  return stop <= to && text.startsWith(name, start) && skipSpaces(text, stop, to) === to;
+}
+
 /**
  * Все вызовы шаблона name — содержимое без внешних скобок. Ищет и внутри других
  * шаблонов, но не внутри найденного. Незакрытая `{{` читается как обычный текст:
@@ -59,7 +82,7 @@ export function findTemplates(text: string, name: string): string[] {
     const from = start + 2;
     if (separator !== -1 && separator < from) separator = nextSeparator(clean, from);
     const headEnd = separator === -1 || separator > end ? end : separator;
-    if (clean.slice(from, headEnd).trim() === name) {
+    if (isTemplateHead(clean, from, headEnd, name)) {
       found.push(clean.slice(from, end));
       skipUntil = end + 2;
     }
@@ -162,12 +185,58 @@ export function rewardsText(value: string): string {
     .join(", ");
 }
 
+const TAG_OPEN = /</y;
+
+/**
+ * Заменяет теги на replacement. Тег — от `<` до ближайшей `>`; head — липкое
+ * выражение, которому должно подходить начало тега (по умолчанию — любая `<`);
+ * nonEmpty — пустой `<>` тегом не считается. То же, что `<[^>]*>` и `<[^>]+>`, но за
+ * один проход: эти выражения для каждой `<` искали `>` заново, и на длинной цепочке
+ * `<` без `>` каждая перечитывала весь остаток текста.
+ */
+export function replaceTags(text: string, replacement: string, head: RegExp = TAG_OPEN, nonEmpty = false): string {
+  let out = "";
+  let copied = 0;
+  for (let open = text.indexOf("<"); open !== -1; open = text.indexOf("<", open + 1)) {
+    head.lastIndex = open;
+    if (!head.test(text)) continue;
+    const close = text.indexOf(">", head.lastIndex);
+    if (close === -1) break; // дальше тегам тоже нечем закрыться
+    if (nonEmpty && close === open + 1) continue;
+    out += text.slice(copied, open) + replacement;
+    copied = close + 1;
+    open = close;
+  }
+  return out + text.slice(copied);
+}
+
+/**
+ * `[[A|B]]` → B и `[[A]]` → A. Ссылка — от `[[` до ближайшей `]`, за которой стоит
+ * ещё одна; подпись — всё после первой `|` внутри. Ближайшая `]` общая для всех `[[`
+ * до неё, поэтому ищется заново, только когда прежняя осталась позади (прежнее
+ * выражение для каждой незакрытой `[[` перечитывало остаток текста).
+ */
+function unlink(text: string): string {
+  let out = "";
+  let copied = 0;
+  let close = -2; // -2 — ещё не искали, -1 — `]` больше нет
+  for (let open = text.indexOf("[["); open !== -1; open = text.indexOf("[[", open + 1)) {
+    const from = open + 2;
+    if (close !== -1 && close < from) close = text.indexOf("]", from);
+    if (close === -1) break;
+    if (text[close + 1] !== "]") continue;
+    const inner = text.slice(from, close);
+    const bar = inner.indexOf("|");
+    out += text.slice(copied, open) + (bar === -1 ? inner : inner.slice(bar + 1));
+    copied = close + 2;
+    open = close + 1;
+  }
+  return out + text.slice(copied);
+}
+
 /** Ссылки [[A|B]] → B, жирный и теги убираются, пробелы схлопываются. */
 export function plainText(value: string): string {
-  return value
-    .replace(/\[\[(?:[^\]|]*\|)?([^\]]*)\]\]/g, "$1")
-    .replace(/'{2,}/g, "")
-    .replace(/<[^>]+>/g, " ")
+  return replaceTags(unlink(value).replace(/'{2,}/g, ""), " ", TAG_OPEN, true)
     .replace(/\s+/g, " ")
     .trim();
 }
