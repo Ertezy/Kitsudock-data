@@ -63,12 +63,18 @@ export const APP_URL_PREFIX = "https://github.com/Ertezy/Kitsudock/releases/";
 // как «/», и адрес с ней у разных читателей получает разных хозяев.
 const URL_FORBIDDEN = /[\s\p{Cc}\p{Cf}\x5c]/u;
 const IPV4_HOST = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+// Имя из непустых меток через точку: хотя бы одна точка, ни точки на конце, ни пустой метки.
+// Так не проходят «localhost», «hsr», «localhost.» и «e..org».
+const DOTTED_HOST = /^[^.]+(?:\.[^.]+)+$/;
+// Сегмент пути «.» или «..» — и в записи %2e любого регистра: разбор такие сегменты сворачивает,
+// и адрес приходит не туда, куда читается в строке.
+const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/i;
 
 /**
  * Простой публичный https-адрес: строка начинается с «https://», не длиннее URL_MAX,
  * без пробелов и управляющих знаков, без логина и порта (явного тоже: «:443» разбор прячет),
- * хост — имя, а не IPv4 и не IPv6. Разбор приводит «2130706433», «0x7f.1» и «127.1»
- * к 127.0.0.1, поэтому IPv4 ищется в уже разобранном имени.
+ * без сегментов пути «.» и «..», хост — имя с точкой, а не IPv4 и не IPv6. Разбор приводит
+ * «2130706433», «0x7f.1» и «127.1» к 127.0.0.1, поэтому IPv4 ищется в уже разобранном имени.
  */
 export function isPublicHttpsUrl(value: unknown): value is string {
   if (typeof value !== "string" || value.length > URL_MAX || !value.startsWith("https://")) return false;
@@ -76,6 +82,9 @@ export function isPublicHttpsUrl(value: unknown): value is string {
   // Начало до первой «/», «?» или «#»: «@» и «:» здесь — логин или порт, в пути и запросе они обычны.
   const authority = value.slice("https://".length).split(/[/?#]/, 1)[0]!;
   if (authority.includes("@") || authority.includes(":")) return false;
+  // Путь — от конца начала до «?» или «#»: «..» в запросе и якоре ничего не сворачивает.
+  const path = value.slice("https://".length + authority.length).split(/[?#]/, 1)[0]!;
+  if (path.split("/").some((segment) => DOT_SEGMENT.test(segment))) return false;
   let url: URL;
   try {
     url = new URL(value);
@@ -83,14 +92,22 @@ export function isPublicHttpsUrl(value: unknown): value is string {
     return false;
   }
   if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.port !== "") return false;
-  return !url.hostname.startsWith("[") && !IPV4_HOST.test(url.hostname);
+  return !url.hostname.startsWith("[") && !IPV4_HOST.test(url.hostname) && DOTTED_HOST.test(url.hostname);
 }
 
-/** Ссылка на ролик: простой https-адрес на www.youtube.com. */
-export const youtubeUrlOk = (url: unknown): url is string => isPublicHttpsUrl(url) && url.startsWith("https://www.youtube.com/");
+/**
+ * Ссылка на ролик: простой https-адрес на www.youtube.com. Строка должна совпасть с тем, что
+ * из неё разберёт читатель (разбор, например, кодирует «"» в «%22»): в файле лежит то, что откроется.
+ */
+export const youtubeUrlOk = (url: unknown): url is string =>
+  isPublicHttpsUrl(url) && url.startsWith("https://www.youtube.com/") && new URL(url).href === url;
 
-/** Страница релиза приложения: простой https-адрес из APP_URL_PREFIX. */
-export const appUrlOk = (url: unknown): url is string => isPublicHttpsUrl(url) && url.startsWith(APP_URL_PREFIX);
+/**
+ * Страница релиза приложения: простой https-адрес из APP_URL_PREFIX. Префикс проверяется и в строке,
+ * и в разобранном виде, чтобы запись вида «releases/..» не уводила на чужой путь на github.com.
+ */
+export const appUrlOk = (url: unknown): url is string =>
+  isPublicHttpsUrl(url) && url.startsWith(APP_URL_PREFIX) && new URL(url).href.startsWith(APP_URL_PREFIX);
 
 /** Название баннера и список персонажей проходят свои проверки и умещаются в пределы. */
 export function bannerFits(title: string, featured: string[]): boolean {

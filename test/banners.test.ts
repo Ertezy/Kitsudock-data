@@ -292,7 +292,7 @@ test("Fandom: подстраница без названия (/a/2099-01-01) в�
   assert.equal(bad.kind, "bad");
   const blank = parseBannerPage(HSR_PAGE, BANNER_PAGES.hsr, "  /2099-01-01", "https://hsr/bad");
   assert.equal(blank.kind, "bad", "название из одних пробелов — тоже пустое");
-  const good = parseBannerPage(HSR_PAGE, BANNER_PAGES.hsr, "Over the Gilded Tides/2026-09-12", "https://hsr/page");
+  const good = parseBannerPage(HSR_PAGE, BANNER_PAGES.hsr, "Over the Gilded Tides/2026-09-12", "https://hsr.fandom.example/page");
   const banners = [bad, blank, good].flatMap((o) => (o.kind === "banner" ? [o.draft.banner] : []));
   assert.equal(banners.length, 1);
   assert.deepEqual(validateHub(hubWith(banners)), []);

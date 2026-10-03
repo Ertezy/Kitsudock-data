@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bannerTitleOk, codeOk, featuredNameOk, isPublicHttpsUrl, validateHub, videoTitleOk } from "../src/validate.ts";
+import { appUrlOk, bannerTitleOk, codeOk, featuredNameOk, isPublicHttpsUrl, validateHub, videoTitleOk, youtubeUrlOk } from "../src/validate.ts";
 import type { HubData } from "../src/types.ts";
 
 const good = (): HubData => ({
@@ -203,6 +203,20 @@ const REJECTED_URLS: [string, string][] = [
   ["https://1.2.3.4./x", "IPv4 с точкой на конце"],
   ["https://[::1]/x", "IPv6"],
   ["https://[::ffff:127.0.0.1]/x", "IPv6 с вложенным IPv4"],
+  ["https://localhost/x", "имя без точки"],
+  ["https://hsr/page", "имя без точки"],
+  ["https://localhost./x", "точка на конце, а точек внутри нет"],
+  ["https://example.org./x", "точка на конце имени"],
+  ["https://e..org/x", "пустая метка в имени"],
+  ["https://.example.org/x", "пустая первая метка"],
+  ["https://example.org/a/../b", "сегмент «..» в пути"],
+  ["https://example.org/a/./b", "сегмент «.» в пути"],
+  ["https://example.org/a/..", "сегмент «..» в конце пути"],
+  ["https://example.org/a/%2e%2e/b", "«..» в виде %2e%2e"],
+  ["https://example.org/a/%2E%2E/b", "«..» в виде %2E%2E"],
+  ["https://example.org/a/.%2e/b", "«..» в смешанном виде"],
+  ["https://example.org/a/%2e./b", "«..» в смешанном виде, наоборот"],
+  ["https://example.org/a/%2e/b", "«.» в виде %2e"],
   ["https://example.org/a b", "пробел"],
   [`https://example.org/a${ch(9)}b`, "табуляция"],
   [`https://example.org/a${ch(10)}b`, "перевод строки"],
@@ -239,53 +253,79 @@ test("адрес: «@» и «:» в пути и запросе допустим�
   assert.equal(isPublicHttpsUrl("https://example.org?x=y@z"), true);
 });
 
+test("адрес: точки в имени файла и в запросе — не сегменты пути", () => {
+  for (const url of [
+    "https://example.org/a..b/c.d",
+    "https://example.org/a/.../b",
+    "https://example.org/a/%2e%2e%2e/b",
+    "https://example.org/a/file%2ejpg",
+    "https://example.org/a?x=../b",
+    "https://example.org/a?x=%2e%2e/b#../c",
+    "https://example.org?x=1",
+    "https://xn--e1afmkfd.xn--p1ai/x",
+  ]) {
+    assert.equal(isPublicHttpsUrl(url), true, url);
+  }
+});
+
+// Строки начинаются с «https://github.com/Ertezy/Kitsudock/releases/», но читатель разберёт их иначе:
+// первые пять уходят в чужой путь на github.com, последняя остаётся внутри, но строка с ней не равна разобранному виду.
+const APP_URL_ESCAPES = [
+  "https://github.com/Ertezy/Kitsudock/releases/../../attacker/repo/releases/tag/v1",
+  "https://github.com/Ertezy/Kitsudock/releases/%2e%2e/%2e%2e/attacker/repo/releases/tag/v1",
+  "https://github.com/Ertezy/Kitsudock/releases/%2E%2E/%2E%2E/attacker/repo/releases/tag/v1",
+  "https://github.com/Ertezy/Kitsudock/releases/.%2e/.%2e/attacker/repo/releases/tag/v1",
+  "https://github.com/Ertezy/Kitsudock/releases/%2e./%2e./attacker/repo/releases/tag/v1",
+  "https://github.com/Ertezy/Kitsudock/releases/./tag/v1",
+];
+
 // По одному полю файла на каждую ссылку. bad — то, что обязано отвергнуться.
 const URL_FIELDS: { path: string; set: (hub: HubData, url: string) => void; bad: string[] }[] = [
   {
     path: "games[0].redeemUrl",
     set: (h, u) => void (h.games[0]!.redeemUrl = u),
-    bad: ["https://u:p@hsr.example.test/gift?code={code}", "https://hsr.example.test:8443/gift?code={code}", "https://10.0.0.1/gift?code={code}"],
+    bad: ["https://u:p@hsr.example.test/gift?code={code}", "https://hsr.example.test:8443/gift?code={code}", "https://10.0.0.1/gift?code={code}", "https://hsr/gift?code={code}", "https://hsr.example.test/a/../gift?code={code}"],
   },
   {
     path: "games[0].background.image",
     set: (h, u) => void (h.games[0]!.background = { image: u }),
-    bad: ["https://u:p@cdn.example.test/a.webp", "https://cdn.example.test:8443/a.webp", "https://192.168.1.1/a.webp", "https://[::1]/a.webp"],
+    bad: ["https://u:p@cdn.example.test/a.webp", "https://cdn.example.test:8443/a.webp", "https://192.168.1.1/a.webp", "https://[::1]/a.webp", "https://cdn/a.webp", "https://cdn.example.test/a/../a.webp"],
   },
   {
     path: "games[0].background.video",
     set: (h, u) => void (h.games[0]!.background = { image: "https://cdn.example.test/a.webp", video: u }),
-    bad: ["https://u:p@cdn.example.test/a.webm", "https://cdn.example.test:8443/a.webm", "https://192.168.1.1/a.mp4", "https://[::1]/a.mp4"],
+    bad: ["https://u:p@cdn.example.test/a.webm", "https://cdn.example.test:8443/a.webm", "https://192.168.1.1/a.mp4", "https://[::1]/a.mp4", "https://cdn/a.webm", "https://cdn.example.test/%2e%2e/a.webm"],
   },
   {
     path: "codes[0].source",
     set: (h, u) => void (h.codes[0]!.source = u),
-    bad: ["https://u:p@wiki.example.test/x", "https://wiki.example.test:8443/x", "https://192.168.1.1/x", "https://[::1]/x", "http://wiki.example.test/x"],
+    bad: ["https://u:p@wiki.example.test/x", "https://wiki.example.test:8443/x", "https://192.168.1.1/x", "https://[::1]/x", "http://wiki.example.test/x", "https://wiki/x", "https://localhost./x", "https://wiki.example.test/a/./x"],
   },
   {
     path: "banners[0].image",
     set: (h, u) => void (h.banners[0]!.image = u),
-    bad: ["https://u:p@cdn.example.test/a.png", "https://cdn.example.test:8443/a.png", "https://192.168.1.1/a.png", "https://[::1]/a.png", "https://cdn.example.test/a b.png"],
+    bad: ["https://u:p@cdn.example.test/a.png", "https://cdn.example.test:8443/a.png", "https://192.168.1.1/a.png", "https://[::1]/a.png", "https://cdn.example.test/a b.png", "https://cdn/a.png", "https://cdn..example.test/a.png"],
   },
   {
     path: "banners[0].url",
     set: (h, u) => void (h.banners[0]!.url = u),
-    bad: ["https://u:p@wiki.example.test/x", "https://wiki.example.test:8443/x", "https://192.168.1.1/x", "https://[::1]/x", `https://wiki.example.test/${"a".repeat(2100)}`],
+    bad: ["https://u:p@wiki.example.test/x", "https://wiki.example.test:8443/x", "https://192.168.1.1/x", "https://[::1]/x", `https://wiki.example.test/${"a".repeat(2100)}`, "https://wiki/x", "https://wiki.example.test/%2e%2e/x"],
   },
   {
     // Начало «https://www.youtube.com/» уже отсекает чужой хост, порт и логин; общая проверка ловит остальное.
     path: "videos[0].url",
     set: (h, u) => void (h.videos[0]!.url = u),
-    bad: ["https://www.youtube.com/watch?v=a b", `https://www.youtube.com/watch?v=${"a".repeat(2100)}`, "https://www.youtube.com/watch?v=a\tb"],
+    bad: ["https://www.youtube.com/watch/../../x", "https://www.youtube.com/a/%2e%2e/x", 'https://www.youtube.com/watch?v=a"b', "https://www.youtube.com/watch?v=a b", `https://www.youtube.com/watch?v=${"a".repeat(2100)}`, "https://www.youtube.com/watch?v=a\tb"],
   },
   {
     path: "videos[0].thumb",
     set: (h, u) => void (h.videos[0]!.thumb = u),
-    bad: ["https://u:p@i1.ytimg.com/vi/a/hqdefault.jpg", "https://i1.ytimg.com:8443/vi/a/hqdefault.jpg", "https://192.168.1.1/a.jpg", "https://[::1]/a.jpg"],
+    bad: ["https://u:p@i1.ytimg.com/vi/a/hqdefault.jpg", "https://i1.ytimg.com:8443/vi/a/hqdefault.jpg", "https://192.168.1.1/a.jpg", "https://[::1]/a.jpg", "https://i1/vi/a.jpg", "https://i1.ytimg.com/vi/../a.jpg"],
   },
   {
     path: "app.url",
     set: (h, u) => void (h.app = { version: "0.1.1", url: u }),
-    bad: ["https://github.com/Ertezy/Kitsudock/releases/tag/v0.1.1 x", `https://github.com/Ertezy/Kitsudock/releases/tag/${"a".repeat(2100)}`],
+    bad: ["https://github.com/Ertezy/Kitsudock/releases/tag/v0.1.1 x", `https://github.com/Ertezy/Kitsudock/releases/tag/${"a".repeat(2100)}`, ...APP_URL_ESCAPES],
   },
 ];
 
@@ -317,6 +357,41 @@ test("validateHub: те же поля принимают настоящие ад
   hub.videos[0]!.thumb = "https://i4.ytimg.com/vi/AAAAAAAAAAA/hqdefault.jpg";
   hub.app = { version: "0.1.0", url: "https://github.com/Ertezy/Kitsudock/releases/tag/v0.1.0" };
   assert.deepEqual(validateHub(hub), []);
+});
+
+test("app.url: «..» и «%2e%2e» не уводят с префикса на чужой путь", () => {
+  for (const url of APP_URL_ESCAPES.slice(0, 5)) {
+    assert.ok(url.startsWith("https://github.com/Ertezy/Kitsudock/releases/"), "строка начинается с префикса");
+    assert.ok(!new URL(url).pathname.startsWith("/Ertezy/Kitsudock/releases/"), `читатель уйдёт с префикса: ${url}`);
+    assert.equal(appUrlOk(url), false, url);
+    const hub = good();
+    hub.app = { version: "0.1.1", url };
+    assert.ok(validateHub(hub).some((e) => e.startsWith("app.url")), url);
+  }
+  assert.equal(appUrlOk(APP_URL_ESCAPES[5]), false, "«./» внутри префикса: строка не равна разобранному виду");
+  assert.equal(appUrlOk("https://github.com/Ertezy/Kitsudock/releases/tag/v0.1.1"), true);
+  assert.equal(appUrlOk(undefined), false);
+});
+
+test("ссылка на ролик: настоящие виды проходят, «..» и расхождение с разобранным видом — нет", () => {
+  for (const url of ["https://www.youtube.com/watch?v=AAAAAAAAAAA", "https://www.youtube.com/shorts/AAAAAAAAAAA", "https://www.youtube.com/@ExampleChannel"]) {
+    assert.equal(youtubeUrlOk(url), true, url);
+  }
+  for (const url of [
+    "https://www.youtube.com/../x",
+    "https://www.youtube.com/watch/%2e%2e/x",
+    "https://www.youtube.com/a/./b",
+    "https://www.youtube.com/a/%2E%2E/%2E%2E/x",
+    'https://www.youtube.com/watch?v=a"b', // читатель получит %22
+    "https://www.youtube.com/watch?v=a<b",
+    "https://www.youtube.com/a{b}",
+    "https://www.youtube.com@example.org/x",
+    "https://example.org/watch?v=a",
+    "http://www.youtube.com/watch?v=a",
+  ]) {
+    assert.equal(youtubeUrlOk(url), false, url);
+  }
+  assert.equal(youtubeUrlOk(null), false);
 });
 
 test("validateHub: app.url — только страница релизов Kitsudock на GitHub", () => {

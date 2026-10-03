@@ -94,3 +94,15 @@ test("страница релиза — только релизы Kitsudock на
     assert.equal(parseAppRelease({ ...RELEASE, html_url: url }), null, url.slice(0, 80));
   }
 });
+
+test("страница релиза: «..» и «%2e%2e» не уводят с префикса на чужой путь на github.com", () => {
+  for (const url of [
+    "https://github.com/Ertezy/Kitsudock/releases/../../attacker/repo/releases/tag/v0.1.1",
+    "https://github.com/Ertezy/Kitsudock/releases/%2e%2e/%2e%2e/attacker/repo/releases/tag/v0.1.1",
+    "https://github.com/Ertezy/Kitsudock/releases/%2E%2E/%2E%2E/attacker/repo/releases/tag/v0.1.1",
+    "https://github.com/Ertezy/Kitsudock/releases/.%2e/.%2e/attacker/repo/releases/tag/v0.1.1",
+    "https://github.com/Ertezy/Kitsudock/releases/./tag/v0.1.1",
+  ]) {
+    assert.equal(parseAppRelease({ ...RELEASE, html_url: url }), null, url);
+  }
+});
