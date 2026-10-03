@@ -238,6 +238,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+const isWholeNumber = (value: unknown): value is number => Number.isInteger(value);
+
 /** Календарь ennead.cc — запасной источник. Только баннеры персонажей; название — главные персонажи. */
 export function parseEnneadBanners(
   json: unknown,
@@ -269,7 +271,8 @@ export function parseEnneadBanners(
     const startsAt = entry.start_time;
     const endsAt = entry.end_time;
     const title = featured.join(" / ");
-    if (typeof startsAt !== "number" || typeof endsAt !== "number" || startsAt >= endsAt || !bannerFits(title, featured)) {
+    // Время — целые секунды, как требует проверка файла: 1788256800.5 — не баннер, а выброшенная запись.
+    if (!isWholeNumber(startsAt) || !isWholeNumber(endsAt) || startsAt >= endsAt || !bannerFits(title, featured)) {
       dropped++;
       continue;
     }

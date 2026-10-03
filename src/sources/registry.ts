@@ -3,7 +3,7 @@
 import type { Http, Validators } from "../http.ts";
 import { isLive, judge } from "../items.ts";
 import { ENDFIELD_WIKI, categoryMembers, expandTemplates, fandom, lastRevisions, pageWikitext, thumbnails, type Wiki } from "../mediawiki.ts";
-import { GAME_IDS, VIDEO_LANGS, type AppRelease, type Banner, type GameBackground, type GameId, type Item, type Section, type SourceRun, type VideoLang } from "../types.ts";
+import { GAME_IDS, VIDEO_LANGS, type AppRelease, type Banner, type Code, type GameBackground, type GameId, type Item, type Section, type SourceRun, type VideoLang } from "../types.ts";
 import { MAX_BANNERS_PER_GAME, MAX_KURO_ARTICLES_PER_RUN } from "../validate.ts";
 import type { ArtMemory } from "./art.ts";
 import { BANNER_PAGES, parseBannerPage, parseEndfieldTable, parseEnneadBanners, recentBannerPages, type BannerDraft, type BannerPageSpec, type PageOutcome } from "./banners.ts";
@@ -99,6 +99,12 @@ async function guarded(run: () => Promise<SourceRun<Item>>): Promise<SourceRun<I
   }
 }
 
+/**
+ * Коды, что попадут в файл: ещё не сгоревшие (сгоревшие mergeHub всё равно выбросит). Предел
+ * MAX_CODES_PER_GAME считается по ним: страница с длинной историей сгоревших кодов — не поток.
+ */
+const liveCodes = (codes: Code[], now: number): Code[] => codes.filter((c) => isLive("codes", c, now));
+
 function fandomCodes(id: string, game: GameId, subdomain: string, page: string, template: "Code Row" | "Redemption Code Row" | "wuwa"): SourceDef {
   return {
     id,
@@ -107,7 +113,7 @@ function fandomCodes(id: string, game: GameId, subdomain: string, page: string, 
     label: `коды ${TITLES[game]} (фандом)`,
     everyHours: 1,
     fallback: false,
-    run: ({ http, memory }) =>
+    run: ({ http, now, memory }) =>
       guarded(async () => {
         const wiki = fandom(subdomain);
         const rev = (await lastRevisions(http, wiki, [page])).get(page);
@@ -117,7 +123,7 @@ function fandomCodes(id: string, game: GameId, subdomain: string, page: string, 
         const text = await pageWikitext(http, wiki, page);
         const url = wiki.pageUrl(page);
         const r = template === "wuwa" ? parseWuwaCodes(text, url) : parseRowCodes(text, template, game, url);
-        const verdict = judge("codes", r.found, r.codes, r.parsed, r.dropped);
+        const verdict = judge("codes", r.found, liveCodes(r.codes, now), r.parsed, r.dropped);
         if (verdict.kind === "ok") memory.revisions[key] = rev;
         return verdict;
       }),
@@ -148,11 +154,11 @@ function ennead(game: "genshin" | "hsr" | "zzz", section: "codes" | "banners"): 
           section === "codes"
             ? (() => {
                 const r = parseEnneadCodes(data, game);
-                return judge("codes", r.found, r.codes, r.parsed, r.dropped);
+                return judge("codes", r.found, liveCodes(r.codes, ctx.now), r.parsed, r.dropped);
               })()
             : (() => {
                 const r = parseEnneadBanners(data, game);
-                return judge("banners", r.found, r.banners, r.parsed, r.dropped);
+                return judge("banners", r.found, newestLive(r.banners, (b) => b, ctx.now), r.parsed, r.dropped);
               })();
         if (verdict.kind === "ok") ctx.memory.validators[url] = res.validators;
         return verdict;
@@ -162,15 +168,18 @@ function ennead(game: "genshin" | "hsr" | "zzz", section: "codes" | "banners"): 
 
 /**
  * Баннеры, что попадут в файл: идущие и будущие (закончившиеся mergeHub всё равно
- * выбросит), самые новые первыми и не больше MAX_BANNERS_PER_GAME. Миниатюры
- * просятся только для них: сколько бы строк ни отдала страница, это один запрос.
+ * выбросит), самые новые первыми и не больше MAX_BANNERS_PER_GAME. Так у всех источников
+ * баннеров один предел, а миниатюры просятся только для оставшихся: сколько бы строк ни
+ * отдала страница, это один запрос.
  */
-function publishable(drafts: BannerDraft[], now: number): BannerDraft[] {
-  return drafts
-    .filter((d) => isLive("banners", d.banner, now))
-    .sort((a, b) => b.banner.startsAt - a.banner.startsAt)
+function newestLive<T>(items: T[], bannerOf: (item: T) => Banner, now: number): T[] {
+  return items
+    .filter((item) => isLive("banners", bannerOf(item), now))
+    .sort((a, b) => bannerOf(b).startsAt - bannerOf(a).startsAt)
     .slice(0, MAX_BANNERS_PER_GAME);
 }
+
+const publishable = (drafts: BannerDraft[], now: number): BannerDraft[] => newestLive(drafts, (d) => d.banner, now);
 
 async function withThumbnails(http: Http, wiki: Wiki, drafts: BannerDraft[]): Promise<Banner[]> {
   const files = drafts.flatMap((d) => (d.imageFile ? [d.imageFile] : []));

@@ -333,3 +333,20 @@ test("ennead.cc: пустое имя персонажа — баннер выб�
   assert.deepEqual(r.banners.map((b) => b.featured), [["Flins"]]);
   assert.deepEqual(validateHub(hubWith(r.banners)), []);
 });
+
+test("ennead.cc: нецелое время баннера — запись выброшена и посчитана, файл проходит проверку", () => {
+  const r = parseEnneadBanners(
+    {
+      banners: [
+        { characters: [{ name: "Fractional start", rarity: 5 }], start_time: 1788256800.5, end_time: 1790060399 },
+        { characters: [{ name: "Fractional end", rarity: 5 }], start_time: 1788256800, end_time: 1790060399.5 },
+        { characters: [{ name: "Flins", rarity: 5 }], start_time: 1788256800, end_time: 1790060399 },
+      ],
+    },
+    "genshin",
+  );
+  assert.equal(r.parsed, 3);
+  assert.equal(r.dropped, 2);
+  assert.deepEqual(r.banners.map((b) => b.title), ["Flins"]);
+  assert.deepEqual(validateHub(hubWith(r.banners)), []);
+});

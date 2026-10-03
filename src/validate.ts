@@ -18,6 +18,7 @@ export const REWARDS_MAX = 300;
 export const BANNER_TITLE_MAX = 200;
 export const FEATURED_MAX = 10;
 export const FEATURED_NAME_MAX = 80;
+export const VIDEO_TITLE_MAX = 300;
 // Пределы на игру: сколько записей один источник отдаёт за запуск. Больше кодов — это не
 // «кодов прибавилось», а испорченная страница или сломанный источник (см. judge); лишние
 // баннеры (самые старые) отбрасываются: так одна страница не плодит запросы миниатюр.
@@ -40,12 +41,18 @@ export const bannerTitleOk = (title: string): boolean => title.trim() !== "" && 
 /** Имя в списке персонажей: не пустое (одни пробелы — пусто) и не длиннее предела. */
 export const featuredNameOk = (name: string): boolean => name.trim() !== "" && name.length <= FEATURED_NAME_MAX;
 
+/** Список персонажей баннера: не больше FEATURED_MAX имён, каждое проходит featuredNameOk. */
+export const featuredListOk = (featured: string[]): boolean => featured.length <= FEATURED_MAX && featured.every(featuredNameOk);
+
+/** Название ролика: до предела длины (пустое допустимо). */
+export const videoTitleOk = (title: string): boolean => title.length <= VIDEO_TITLE_MAX;
+
 /** Код: латинские буквы и цифры, 4–40 знаков. */
 export const codeOk = (code: string): boolean => CODE_PATTERN.test(code);
 
 /** Название баннера и список персонажей проходят свои проверки и умещаются в пределы. */
 export function bannerFits(title: string, featured: string[]): boolean {
-  return bannerTitleOk(title) && featured.length <= FEATURED_MAX && featured.every(featuredNameOk);
+  return bannerTitleOk(title) && featuredListOk(featured);
 }
 
 const isInt = (value: unknown) => Number.isInteger(value);
@@ -92,7 +99,7 @@ export function validateHub(hub: HubData, maxBytes = MAX_FILE_BYTES): string[] {
     const at = `banners[${i}]`;
     if (!knownGame(b.gameId)) fail(`${at}.gameId: игры ${b.gameId} нет в файле`);
     if (!(typeof b.title === "string" && bannerTitleOk(b.title))) fail(`${at}.title: 1–200 знаков`);
-    if (!Array.isArray(b.featured) || b.featured.length > FEATURED_MAX || !b.featured.every((f) => typeof f === "string" && featuredNameOk(f))) {
+    if (!Array.isArray(b.featured) || !b.featured.every((f) => typeof f === "string") || !featuredListOk(b.featured)) {
       fail(`${at}.featured: до 10 имён по 80 знаков`);
     }
     if (b.rarity !== null && !(isInt(b.rarity) && b.rarity >= 1 && b.rarity <= 6)) fail(`${at}.rarity: 1–6 или null`);
@@ -107,7 +114,7 @@ export function validateHub(hub: HubData, maxBytes = MAX_FILE_BYTES): string[] {
     const at = `videos[${i}]`;
     if (!knownGame(v.gameId)) fail(`${at}.gameId: игры ${v.gameId} нет в файле`);
     if (!VIDEO_LANGS.includes(v.lang)) fail(`${at}.lang: en или ja`);
-    if (!text(v.title, 0, 300)) fail(`${at}.title: до 300 знаков`);
+    if (!(typeof v.title === "string" && videoTitleOk(v.title))) fail(`${at}.title: до 300 знаков`);
     if (!(typeof v.url === "string" && v.url.startsWith("https://www.youtube.com/"))) fail(`${at}.url: только https://www.youtube.com/`);
     if (!httpsOrNull(v.thumb)) fail(`${at}.thumb: https или null`);
     if (!isInt(v.publishedAt)) fail(`${at}.publishedAt: целое`);

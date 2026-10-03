@@ -120,3 +120,27 @@ test("начала баннеров игры из файла правок: чу�
   assert.deepEqual(bannerStarts(parsed.overrides, "genshin"), []);
   assert.deepEqual(bannerStarts({ codes: [], banners: [], hide: [] }, "wuthering"), []);
 });
+
+// check-overrides должен отвергать всё, что отвергла бы проверка файла перед выкладкой.
+test("правки: больше 10 имён в featured, имя длиннее 80 знаков и пустое имя — ошибки", () => {
+  const banner = (featured: unknown) => ({ game: "wuthering", title: "T", featured, starts: "2026-09-10 10:00 UTC+1", ends: "2026-09-29 11:59 UTC+1" });
+  const names = (n: number) => Array.from({ length: n }, (_, i) => `Name ${i}`);
+  assert.equal(parseOverrides({ banners: [banner(names(10))] }).ok, true, "десять имён — предел");
+  assert.equal(parseOverrides({ banners: [banner(["x".repeat(80)])] }).ok, true, "80 знаков — предел");
+  for (const bad of [names(11), ["x".repeat(81)], [""], ["  "]]) {
+    const r = parseOverrides({ banners: [banner(bad)] });
+    assert.equal(r.ok, false, JSON.stringify(bad).slice(0, 40));
+    if (!r.ok) assert.match(r.errors[0]!, /^banners\[0\]: featured/);
+  }
+});
+
+test("правки: название баннера, код и награда проверяются теми же правилами, что и файл", () => {
+  const starts = { starts: "2026-09-10 10:00 UTC+1", ends: "2026-09-29 11:59 UTC+1" };
+  assert.equal(parseOverrides({ banners: [{ game: "hsr", title: "x".repeat(200), ...starts }] }).ok, true);
+  assert.equal(parseOverrides({ banners: [{ game: "hsr", title: "x".repeat(201), ...starts }] }).ok, false);
+  assert.equal(parseOverrides({ banners: [{ game: "hsr", title: "   ", ...starts }] }).ok, false);
+  assert.equal(parseOverrides({ codes: [{ game: "hsr", code: "ABCD", rewards: "x".repeat(300) }] }).ok, true);
+  assert.equal(parseOverrides({ codes: [{ game: "hsr", code: "ABCD", rewards: "x".repeat(301) }] }).ok, false);
+  assert.equal(parseOverrides({ codes: [{ game: "hsr", code: "ABC" }] }).ok, false);
+  assert.equal(parseOverrides({ codes: [{ game: "hsr", code: "a1".repeat(20) + "z" }] }).ok, false);
+});

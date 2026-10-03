@@ -3,6 +3,7 @@
 // канал — @ArknightsEndfieldEN: лента основного @ArknightsEndfield пуста.
 
 import type { GameId, Video, VideoLang } from "../types.ts";
+import { videoTitleOk } from "../validate.ts";
 
 export const CHANNELS: Record<VideoLang, Record<GameId, string>> = {
   en: {
@@ -61,17 +62,19 @@ export function parseYoutubeFeed(
     parsed++;
     const channel = pick(block, /<yt:channelId>([^<]+)<\/yt:channelId>/);
     const url = pick(block, /<link rel="alternate" href="([^"]+)"/);
-    const title = pick(block, /<title>([^<]*)<\/title>/);
+    const rawTitle = pick(block, /<title>([^<]*)<\/title>/);
+    const title = rawTitle === undefined ? undefined : decode(rawTitle).trim();
     const publishedAt = Date.parse(pick(block, /<published>([^<]+)<\/published>/) ?? "") / 1000;
     const thumb = pick(block, /<media:thumbnail url="([^"]+)"/);
-    if (channel !== channelId || !url?.startsWith("https://www.youtube.com/") || title === undefined || !Number.isFinite(publishedAt)) {
+    // Название длиннее предела — не ролик, а выброшенная запись: проверка файла не должна падать из-за одного заголовка.
+    if (channel !== channelId || !url?.startsWith("https://www.youtube.com/") || title === undefined || !videoTitleOk(title) || !Number.isFinite(publishedAt)) {
       dropped++;
       continue;
     }
     videos.push({
       gameId,
       lang,
-      title: decode(title).trim(),
+      title,
       url,
       thumb: thumb?.startsWith("https://") ? thumb : null,
       publishedAt: Math.floor(publishedAt),

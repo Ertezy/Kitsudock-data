@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bannerTitleOk, codeOk, featuredNameOk, validateHub } from "../src/validate.ts";
+import { bannerTitleOk, codeOk, featuredNameOk, validateHub, videoTitleOk } from "../src/validate.ts";
 import type { HubData } from "../src/types.ts";
 
 const good = (): HubData => ({
@@ -137,4 +137,13 @@ test("validateHub пользуется теми же проверками: пу�
   const errors = validateHub(hub);
   assert.ok(errors.some((e) => e.startsWith("banners[0].title")));
   assert.ok(errors.some((e) => e.startsWith("banners[0].featured")));
+});
+
+test("название ролика: от 0 до 300 знаков, и validateHub пользуется той же проверкой", () => {
+  assert.equal(videoTitleOk(""), true);
+  assert.equal(videoTitleOk("x".repeat(300)), true);
+  assert.equal(videoTitleOk("x".repeat(301)), false);
+  const hub = good();
+  hub.videos[0]!.title = "x".repeat(301);
+  assert.ok(validateHub(hub).some((e) => e.startsWith("videos[0].title")));
 });

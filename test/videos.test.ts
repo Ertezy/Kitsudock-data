@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GAME_IDS, VIDEO_LANGS } from "../src/types.ts";
+import { GAME_IDS, VIDEO_LANGS, type HubData } from "../src/types.ts";
+import { validateHub } from "../src/validate.ts";
 import { CHANNELS, feedUrl, parseYoutubeFeed } from "../src/sources/videos.ts";
 import { runBounded } from "./bounded.ts";
 
@@ -84,4 +85,25 @@ test("50 000 незакрытых <entry> читаются за линейное
   const xml = `<feed>${"<entry>".repeat(50_000)}</feed>`;
   const r = await runBounded<ReturnType<typeof parseYoutubeFeed>>("../src/sources/videos.ts", "parseYoutubeFeed", [xml, "endfield", CHANNELS.en.endfield, "en"]);
   assert.deepEqual([r.found, r.parsed, r.dropped, r.videos.length], [true, 0, 0, 0]);
+});
+
+test("ролик с названием длиннее предела выбрасывается и считается, файл проходит проверку", () => {
+  const feed = `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015">
+${entry("longlonglo1", "2026-09-15T09:00:33+00:00", "T".repeat(301))}
+${entry("edgeedgeed1", "2026-09-14T09:00:33+00:00", "T".repeat(300))}
+${entry("shortshort1", "2026-09-13T09:00:33+00:00", "Short")}
+</feed>`;
+  const r = parseYoutubeFeed(feed, "endfield", CHANNELS.en.endfield, "en");
+  assert.equal(r.parsed, 3);
+  assert.equal(r.dropped, 1);
+  assert.deepEqual(r.videos.map((v) => v.title.length), [300, 5]);
+  const hub: HubData = {
+    version: 2,
+    updatedAt: 1_788_000_000,
+    games: [{ id: "endfield", title: "Arknights: Endfield", match: { steamAppIds: [], epicAppNames: [], folderNames: [] } }],
+    codes: [],
+    banners: [],
+    videos: r.videos,
+  };
+  assert.deepEqual(validateHub(hub), []);
 });

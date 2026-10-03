@@ -1,8 +1,8 @@
 // Файл правок владельца (спека §5.4): добавить код или баннер, скрыть ошибочную запись.
 
-import { CODE_PATTERN } from "./sources/codes.ts";
 import { atOffset, parseIsoLike, parseOffset } from "./time.ts";
 import { GAME_IDS, type Banner, type Code, type GameId, type HubData } from "./types.ts";
+import { bannerTitleOk, codeOk, featuredListOk, rewardsFits } from "./validate.ts";
 
 export interface CodeOverride {
   game: GameId;
@@ -58,8 +58,9 @@ export function parseOverrides(json: unknown): { ok: true; overrides: Overrides 
     const at = `codes[${i}]`;
     if (typeof e !== "object" || e === null || Array.isArray(e)) return void errors.push(`${at}: запись должна быть объектом`);
     if (!isGame(e.game)) return void errors.push(`${at}: неизвестная игра ${JSON.stringify(e.game)}`);
-    if (typeof e.code !== "string" || !CODE_PATTERN.test(e.code)) return void errors.push(`${at}: код только из латинских букв и цифр, 4–40 знаков`);
-    if (e.rewards !== undefined && (typeof e.rewards !== "string" || e.rewards.length > 300)) return void errors.push(`${at}: награда — строка до 300 знаков`);
+    // Проверки записей те же, что у validateHub (validate.ts): то, что он отверг бы, check-overrides отвергает сразу.
+    if (typeof e.code !== "string" || !codeOk(e.code)) return void errors.push(`${at}: код только из латинских букв и цифр, 4–40 знаков`);
+    if (e.rewards !== undefined && (typeof e.rewards !== "string" || !rewardsFits(e.rewards))) return void errors.push(`${at}: награда — строка до 300 знаков`);
     if (e.expires !== undefined && (typeof e.expires !== "string" || parseMoment(e.expires) === null)) {
       return void errors.push(`${at}: срок в виде «2026-10-01 23:59 UTC+8»`);
     }
@@ -73,13 +74,17 @@ export function parseOverrides(json: unknown): { ok: true; overrides: Overrides 
     const at = `banners[${i}]`;
     if (typeof e !== "object" || e === null || Array.isArray(e)) return void errors.push(`${at}: запись должна быть объектом`);
     if (!isGame(e.game)) return void errors.push(`${at}: неизвестная игра ${JSON.stringify(e.game)}`);
-    if (typeof e.title !== "string" || e.title.trim() === "" || e.title.length > 200) return void errors.push(`${at}: нужно название до 200 знаков`);
+    // Название хранится обрезанным по краям, поэтому и проверяется обрезанным.
+    if (typeof e.title !== "string" || !bannerTitleOk(e.title.trim())) return void errors.push(`${at}: нужно название до 200 знаков`);
     const starts = typeof e.starts === "string" ? parseMoment(e.starts) : null;
     const ends = typeof e.ends === "string" ? parseMoment(e.ends) : null;
     if (starts === null || ends === null) return void errors.push(`${at}: начало и конец в виде «2026-09-10 10:00 UTC+1»`);
     if (starts >= ends) return void errors.push(`${at}: конец раньше начала`);
     if (e.featured !== undefined && !(Array.isArray(e.featured) && e.featured.every((f) => typeof f === "string"))) {
       return void errors.push(`${at}: featured — список имён`);
+    }
+    if (e.featured !== undefined && !featuredListOk(e.featured as string[])) {
+      return void errors.push(`${at}: featured — до 10 имён по 80 знаков, без пустых`);
     }
     if ((e.image !== undefined && !isHttps(e.image)) || (e.url !== undefined && !isHttps(e.url))) {
       return void errors.push(`${at}: image и url только https://`);

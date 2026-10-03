@@ -820,3 +820,42 @@ test("баннеры с фандома: закончившийся баннер 
   assert.equal(imageinfoCalls(f.urls).length, 0, "миниатюра для него не запрашивалась");
   assert.ok(f.urls.some((u) => u.includes("list=categorymembers") && u.includes(`cmlimit=${MAX_BANNERS_PER_GAME}`)));
 });
+
+// Предел кодов считается по тем, что попадут в файл: долгая история сгоревших кодов на странице — не поток.
+const expiredRow = (code: string) => `{{Redemption Code Row|${code}|ref=|A|{{Item List|Credit*1|mode=br}}|2026-08-01|2026-08-02}}`;
+
+test("коды с фандома: 250 сгоревших и 5 живых — норма, в файл идут 5 живых", async () => {
+  const expired = Array.from({ length: 250 }, (_, i) => expiredRow(`OLD${String(i).padStart(4, "0")}`));
+  const live = Array.from({ length: 5 }, (_, i) => redemptionRow(`LIVE${String(i).padStart(4, "0")}`));
+  const memory = emptyMemory();
+  const run = await byId("hsr-codes").run({ http: hsrCodesWiki([...expired, ...live].join("\n")).http, now: NOW, memory });
+  assert.equal(run.kind, "ok");
+  if (run.kind !== "ok") return;
+  assert.deepEqual(run.items.map((c) => (c as { code: string }).code), Array.from({ length: 5 }, (_, i) => `LIVE${String(i).padStart(4, "0")}`));
+  assert.equal(Object.keys(memory.revisions).length, 1, "номер правки запомнен");
+  const catalog: HubGame[] = [{ id: "hsr", title: "Honkai: Star Rail", match: { steamAppIds: [], epicAppNames: [], folderNames: [] } }];
+  const hub = mergeHub({ previous: null, catalog, runs: new Map<string, SourceRun<Item>>([[sectionKey("hsr", "codes"), run]]), now: NOW });
+  assert.equal(hub.codes.length, 5);
+});
+
+test("коды с фандома: 201 живой код среди сгоревших — по-прежнему поломка", async () => {
+  const expired = Array.from({ length: 50 }, (_, i) => expiredRow(`OLD${String(i).padStart(4, "0")}`));
+  const run = await byId("hsr-codes").run({ http: hsrCodesWiki([...expired, codesPage(201)].join("\n")).http, now: NOW, memory: emptyMemory() });
+  assert.equal(run.kind, "broken");
+});
+
+// Календарь ennead.cc тоже идёт через общий предел баннеров: живые, самые новые, не больше 50.
+test("баннеры ennead.cc: 120 живых и 10 закончившихся — не больше 50, самые новые", async () => {
+  const day = 86_400;
+  const live = Array.from({ length: 120 }, (_, i) => ({ characters: [{ name: `Hero ${i}`, rarity: 5 }], start_time: NOW + i * day, end_time: NOW + (i + 10) * day }));
+  const expired = Array.from({ length: 10 }, (_, i) => ({ characters: [{ name: `Gone ${i}`, rarity: 5 }], start_time: NOW - (100 + i) * day, end_time: NOW - (50 + i) * day }));
+  const http = fakeHttp([(u) => (u.host === "api.ennead.cc" ? json({ banners: [...expired, ...live] }) : undefined)]).http;
+  const run = await byId("genshin-banners-ennead").run({ http, now: NOW, memory: emptyMemory() });
+  assert.equal(run.kind, "ok");
+  if (run.kind !== "ok") return;
+  assert.equal(run.items.length, MAX_BANNERS_PER_GAME);
+  assert.deepEqual(
+    run.items.map((b) => (b as { title: string }).title).sort(),
+    Array.from({ length: 50 }, (_, i) => `Hero ${70 + i}`).sort(),
+  );
+});
