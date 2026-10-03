@@ -9,7 +9,7 @@
 
 import { atOffset, EUROPE_SERVER_OFFSET_MINUTES, parseIsoLike } from "../time.ts";
 import { GAME_IDS, type Banner, type HubData } from "../types.ts";
-import { bannerFits } from "../validate.ts";
+import { MAX_KURO_BANNERS_PER_ARTICLE, bannerFits } from "../validate.ts";
 import { isSpace, replaceTags } from "../wikitext.ts";
 
 export const KURO_MENU_URL =
@@ -248,7 +248,8 @@ function blockFact(title: string, block: string[]): KuroBannerFact | null {
  * Баннеры персонажей из анонса. Пустой массив — ничего не нашлось. Одиночный баннер
  * пишется без строки «[Название] Featured Resonator Convene» в теле — она есть только
  * в названии статьи (`ownTitle`); тогда заголовком служит оно, а блок — всё тело
- * до первого оружейного заголовка.
+ * до первого оружейного заголовка. Из статьи берутся первые MAX_KURO_BANNERS_PER_ARTICLE
+ * баннеров: больше в анонсе не бывает, а остальное — испорченная страница.
  */
 export function kuroBannerFacts(lines: string[], ownTitle?: string | null): KuroBannerFact[] {
   const heads: number[] = [];
@@ -257,18 +258,19 @@ export function kuroBannerFacts(lines: string[], ownTitle?: string | null): Kuro
   });
   const facts: KuroBannerFact[] = [];
   const push = (fact: KuroBannerFact | null) => {
-    if (fact) facts.push(fact);
+    if (fact && facts.length < MAX_KURO_BANNERS_PER_ARTICLE) facts.push(fact);
   };
   if (!lines.some((line) => RESONATOR_HEAD.test(line))) {
     const own = ownTitle ? RESONATOR_HEAD.exec(ownTitle.trim())?.[1]?.trim() : undefined;
     if (own) push(blockFact(own, lines.slice(0, heads[0] ?? lines.length)));
     return facts;
   }
-  heads.forEach((head, n) => {
+  for (let n = 0; n < heads.length && facts.length < MAX_KURO_BANNERS_PER_ARTICLE; n++) {
+    const head = heads[n]!;
     const title = RESONATOR_HEAD.exec(lines[head]!)?.[1]?.trim();
-    if (!title) return; // блок оружия
+    if (!title) continue; // блок оружия
     push(blockFact(title, lines.slice(head + 1, heads[n + 1] ?? lines.length)));
-  });
+  }
   return facts;
 }
 
@@ -341,10 +343,53 @@ const comparableTitle = (title: string) =>
     .trim()
     .toLowerCase();
 
-const sameBanner = (a: Banner, b: Banner) =>
-  a.gameId === b.gameId &&
-  comparableTitle(a.title) === comparableTitle(b.title) &&
-  Math.abs(a.startsAt - b.startsAt) <= SAME_BANNER_SECONDS;
+/**
+ * Сверка «такой баннер уже есть»: одна игра, одно название для сравнения и начала в пределах
+ * SAME_BANNER_SECONDS. Начала одной связки (игра + название) разложены по окнам шириной в эти
+ * 2 суток, в окне помнятся наименьшее и наибольшее. Подходящее начало может быть только в своём
+ * окне (там любое — не дальше 2 суток) и в двух соседних (там — ближайшее к краю): поэтому ответ
+ * за O(1), а не перебором всех записей.
+ */
+class BannerIndex {
+  private readonly groups = new Map<string, Map<number, { min: number; max: number }>>();
+
+  private static key(banner: Banner): string {
+    return `${banner.gameId}
+${comparableTitle(banner.title)}`;
+  }
+
+  private static window(startsAt: number): number {
+    return Math.floor(startsAt / SAME_BANNER_SECONDS);
+  }
+
+  add(banner: Banner): void {
+    if (!Number.isFinite(banner.startsAt)) return; // с таким началом баннер ни с чем не совпадает
+    const key = BannerIndex.key(banner);
+    let windows = this.groups.get(key);
+    if (windows === undefined) this.groups.set(key, (windows = new Map()));
+    const at = BannerIndex.window(banner.startsAt);
+    const known = windows.get(at);
+    if (known === undefined) windows.set(at, { min: banner.startsAt, max: banner.startsAt });
+    else {
+      known.min = Math.min(known.min, banner.startsAt);
+      known.max = Math.max(known.max, banner.startsAt);
+    }
+  }
+
+  has(banner: Banner): boolean {
+    if (!Number.isFinite(banner.startsAt)) return false;
+    const windows = this.groups.get(BannerIndex.key(banner));
+    if (windows === undefined) return false;
+    const at = BannerIndex.window(banner.startsAt);
+    const before = windows.get(at - 1);
+    const after = windows.get(at + 1);
+    return (
+      windows.has(at) ||
+      (before !== undefined && banner.startsAt - before.max <= SAME_BANNER_SECONDS) ||
+      (after !== undefined && after.min - banner.startsAt <= SAME_BANNER_SECONDS)
+    );
+  }
+}
 
 /**
  * Добавляет баннеры Kuro, которых там ещё нет. Фандом побеждает: у него есть
@@ -353,8 +398,12 @@ const sameBanner = (a: Banner, b: Banner) =>
  */
 export function withKuroBanners(hub: HubData, kuro: Banner[]): HubData {
   const banners = [...hub.banners];
+  const index = new BannerIndex();
+  for (const banner of banners) index.add(banner);
   for (const banner of kuro) {
-    if (!banners.some((b) => sameBanner(b, banner))) banners.push(banner);
+    if (index.has(banner)) continue;
+    banners.push(banner);
+    index.add(banner);
   }
   if (banners.length === hub.banners.length) return hub;
   banners.sort((a, b) => GAME_IDS.indexOf(a.gameId) - GAME_IDS.indexOf(b.gameId) || a.startsAt - b.startsAt);

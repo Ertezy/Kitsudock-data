@@ -26,6 +26,11 @@ export const MAX_CODES_PER_GAME = 200;
 export const MAX_BANNERS_PER_GAME = 50;
 // Предел на запуск: сколько статей Kuro читается за раз; остальные подождут следующего запуска.
 export const MAX_KURO_ARTICLES_PER_RUN = 30;
+// Из одной статьи Kuro берутся первые баннеры не больше этого числа: в анонсе их единицы, а больше —
+// это не анонс, а испорченная или подложенная страница.
+export const MAX_KURO_BANNERS_PER_ARTICLE = 10;
+// Сколько баннеров без картинки за прогон проверяется на арт прошлого запуска; остальные ждут следующего прогона.
+export const MAX_ART_LOOKUPS_PER_RUN = 20;
 
 /** Награда кода умещается в предел длины. */
 export function rewardsFits(rewards: string): boolean {

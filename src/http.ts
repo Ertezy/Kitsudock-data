@@ -154,6 +154,20 @@ export function createHttp(options: HttpOptions = {}): Http {
   };
 }
 
+/**
+ * Сбой связи, а не ответа: таймаут, обрыв, нет соединения. Это не про один адрес — сайт не
+ * отвечает, и следующие запросы к нему в этом прогоне зависнут так же. Поэтому циклы по
+ * адресам на таком сбое останавливаются, а остаток ждёт следующего прогона. Ответ с кодом
+ * (StatusError), слишком большое тело, уход с https и прочие ошибки — про один ответ, цикл их переживает.
+ */
+export function isTransportError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error instanceof StatusError || error instanceof TooLargeError || error instanceof NotHttpsError) return false;
+  if (error.name === "TimeoutError" || error.name === "AbortError") return true;
+  // fetch (undici) при сбое соединения кидает TypeError «fetch failed», при обрыве тела ответа — «terminated».
+  return error instanceof TypeError && (error.message === "fetch failed" || error.message === "terminated");
+}
+
 export class StatusError extends Error {
   status: number;
   constructor(status: number, url: string) {

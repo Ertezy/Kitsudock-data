@@ -7,10 +7,11 @@
 // арт с этим названием с фандома своей игры. Ссылка, как и у остальных картинок, —
 // на копию у фандома; сами картинки нигде не хранятся.
 
-import type { Http } from "../http.ts";
+import { isTransportError, type Http } from "../http.ts";
 import { fandom, filesWithPrefix, thumbnails, type WikiFile } from "../mediawiki.ts";
 import { isDue } from "../state.ts";
 import type { Banner, HubData } from "../types.ts";
+import { MAX_ART_LOOKUPS_PER_RUN } from "../validate.ts";
 import { BANNER_PAGES } from "./banners.ts";
 import { ENNEAD_SOURCE } from "./codes.ts";
 
@@ -73,12 +74,16 @@ const wantsArt = (banner: Banner) => banner.image === null && banner.url !== ENN
  * Баннеры, которых больше нет или у которых появилась своя картинка, из памяти
  * убираются. Сбой по одному баннеру оставляет его прошлую картинку, откладывает
  * повтор на тот же срок и возвращается предупреждением: прогон из-за картинки не падает.
+ * За прогон проверяется не больше MAX_ART_LOOKUPS_PER_RUN баннеров (остальные — в следующий
+ * прогон), а сбой связи (таймаут, обрыв) обрывает поиск: вики не отвечает, остальным баннерам
+ * не лучше.
  */
 export async function refreshArt(http: Http, banners: Banner[], art: ArtMemory, now: number): Promise<string[]> {
   const warnings: string[] = [];
   const wanted = new Map<string, Banner>();
   for (const banner of banners) if (wantsArt(banner)) wanted.set(artKey(banner), banner);
   for (const key of Object.keys(art)) if (!wanted.has(key)) delete art[key];
+  let lookups = 0;
   for (const [key, banner] of wanted) {
     if (!isDue(art[key]?.checkedAt, ART_RECHECK_HOURS, now)) continue;
     const title = fileTitle(banner.title);
@@ -86,6 +91,8 @@ export async function refreshArt(http: Http, banners: Banner[], art: ArtMemory, 
       art[key] = { image: null, checkedAt: now };
       continue;
     }
+    if (lookups >= MAX_ART_LOOKUPS_PER_RUN) break; // остальных проверит следующий прогон
+    lookups++;
     const wiki = wikiFor(banner.gameId)!;
     try {
       const name = pickPreviousArt(await filesWithPrefix(http, wiki, title), title);
@@ -96,8 +103,13 @@ export async function refreshArt(http: Http, banners: Banner[], art: ArtMemory, 
       }
       art[key] = { image, checkedAt: now };
     } catch (error) {
+      // У баннера со сбоем срок повтора обычный: иначе баннер, на котором вики вечно виснет, держал бы очередь.
       art[key] = { image: art[key]?.image ?? null, checkedAt: now };
       warnings.push(`${key}: ${(error as Error).message}`);
+      if (isTransportError(error)) {
+        warnings.push("поиск арта остановлен: вики не отвечает, остальные баннеры — в следующий прогон");
+        break;
+      }
     }
   }
   return warnings;

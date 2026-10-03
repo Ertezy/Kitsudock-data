@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { gzipSync } from "node:zlib";
-import { createHttp, USER_AGENT, type FetchLike } from "../src/http.ts";
+import { createHttp, isTransportError, StatusError, USER_AGENT, type FetchLike } from "../src/http.ts";
 
 function fakeFetch(responses: { status: number; body?: string; headers?: Record<string, string> }[]) {
   const calls: { url: string; headers: Record<string, string> }[] = [];
@@ -273,4 +273,29 @@ test("по умолчанию: обычный Response отдаёт тело и 
   const res = await createHttp({ sleep: noSleep }).get("https://example.org/a");
   assert.equal(res.body, "ok");
   assert.equal(res.validators.etag, '"v9"');
+});
+
+test("сбой связи: таймаут, обрыв и «fetch failed» — да; ответ с кодом, потолок размера, не https и чужие ошибки — нет", async () => {
+  assert.equal(isTransportError(new DOMException("The operation was aborted due to timeout", "TimeoutError")), true);
+  assert.equal(isTransportError(new DOMException("This operation was aborted", "AbortError")), true);
+  assert.equal(isTransportError(new TypeError("fetch failed", { cause: new Error("ECONNRESET") })), true);
+  assert.equal(isTransportError(new TypeError("terminated")), true);
+  assert.equal(isTransportError(new Error("сеть недоступна")), false, "обычная ошибка — не сбой связи");
+  assert.equal(isTransportError(new SyntaxError("Unexpected token")), false);
+  assert.equal(isTransportError(new TypeError("x is not a function")), false);
+  assert.equal(isTransportError(new StatusError(404, "https://example.org/a")), false);
+  assert.equal(isTransportError("timeout"), false);
+  assert.equal(isTransportError(undefined), false);
+  // Ошибки самого http: потолок размера и уход с https про один ответ.
+  const big = fakeFetch([{ status: 200, body: "x".repeat(20) }]);
+  const tooLarge = await createHttp({ fetch: big.fetch, sleep: noSleep, maxBytes: 10 }).get("https://example.org/a").catch((e: unknown) => e);
+  assert.equal(isTransportError(tooLarge), false);
+  const notHttps = await createHttp({ fetch: fakeFetch([]).fetch, sleep: noSleep }).get("http://example.org/a").catch((e: unknown) => e);
+  assert.equal(isTransportError(notHttps), false);
+  // Таймаут настоящего запроса после повтора по-прежнему сбой связи.
+  const slow: FetchLike = async () => {
+    throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+  };
+  const timedOut = await createHttp({ fetch: slow, sleep: noSleep }).get("https://example.org/a").catch((e: unknown) => e);
+  assert.equal(isTransportError(timedOut), true);
 });

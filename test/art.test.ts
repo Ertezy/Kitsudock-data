@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { Http } from "../src/http.ts";
+import { StatusError, type Http } from "../src/http.ts";
 import { ART_RECHECK_HOURS, artKey, pickPreviousArt, refreshArt, withArt, type ArtMemory } from "../src/sources/art.ts";
 import { ENNEAD_SOURCE } from "../src/sources/codes.ts";
 import type { Banner, HubData } from "../src/types.ts";
+import { MAX_ART_LOOKUPS_PER_RUN } from "../src/validate.ts";
 
 const NOW = 1_800_000_000;
 const THUMB = "https://static.wikia.nocookie.net/w/images/a/aa/Test_Banner_2026-05-21.jpg/revision/latest/scale-to-width-down/400";
@@ -192,4 +193,64 @@ test("подстановка: только пустые картинки, тот
   const ennead = { ...hub, banners: [banner({ url: ENNEAD_SOURCE })] } as HubData;
   assert.equal(withArt(ennead, art), ennead, "записи ennead.cc арт не получают");
   assert.equal(withArt(hub, {}), hub);
+});
+
+// Число запросов за прогон не растёт вместе с числом баннеров без картинки.
+
+test("за прогон проверяется не больше 20 баннеров, остальные — в следующие прогоны", async () => {
+  assert.equal(MAX_ART_LOOKUPS_PER_RUN, 20);
+  const banners = Array.from({ length: 100 }, (_, i) => banner({ title: `Synthetic ${i}` }));
+  const wiki = fakeWiki({}, {});
+  const art: ArtMemory = {};
+  await refreshArt(wiki.http, banners, art, NOW);
+  assert.equal(wiki.urls.length, 20, "двадцать запросов — по одному на баннер");
+  assert.equal(Object.keys(art).length, 20, "остальные не запомнены и будут проверены следующим прогоном");
+  for (let run = 0; run < 4; run++) await refreshArt(wiki.http, banners, art, NOW);
+  assert.equal(wiki.urls.length, 100);
+  assert.equal(new Set(wiki.urls).size, 100, "каждый баннер ровно один раз");
+  assert.equal(Object.keys(art).length, 100);
+});
+
+test("баннеры, не требующие запроса, предел проверок не занимают", async () => {
+  const wiki = fakeWiki({}, {});
+  const skipped = Array.from({ length: 30 }, (_, i) => banner({ title: `Skip #${i}` })); // вики такое имя файла не примет
+  const art: ArtMemory = {};
+  await refreshArt(wiki.http, [...skipped, ...Array.from({ length: 25 }, (_, i) => banner({ title: `Real ${i}` }))], art, NOW);
+  assert.equal(wiki.urls.length, 20);
+});
+
+for (const [name, makeError] of [
+  ["таймаут", () => new DOMException("The operation was aborted due to timeout", "TimeoutError")],
+  ["обрыв соединения", () => new TypeError("fetch failed", { cause: new Error("ECONNRESET") })],
+] as const) {
+  test(`сбой связи (${name}) останавливает поиск арта: следующих баннеров вики не спрашивают`, async () => {
+    const urls: string[] = [];
+    const http: Http = {
+      async get(url) {
+        urls.push(url);
+        throw makeError();
+      },
+    };
+    const art: ArtMemory = {};
+    const warnings = await refreshArt(http, [banner({ title: "A" }), banner({ title: "B" }), banner({ title: "C" })], art, NOW);
+    assert.equal(urls.length, 1, "после первого сбоя запросов больше нет");
+    assert.equal(warnings.length, 2);
+    assert.match(warnings[0]!, /wuthering\|A/);
+    assert.deepEqual(Object.keys(art), ["wuthering|A"], "остальные баннеры проверит следующий прогон");
+    assert.deepEqual(art["wuthering|A"], { image: null, checkedAt: NOW }, "у баннера со сбоем срок повтора обычный, иначе он держал бы очередь вечно");
+  });
+}
+
+test("ответ с кодом 404 по одному баннеру поиск не останавливает", async () => {
+  const urls: string[] = [];
+  const http: Http = {
+    async get(url) {
+      urls.push(url);
+      throw new StatusError(404, url);
+    },
+  };
+  const art: ArtMemory = {};
+  const warnings = await refreshArt(http, [banner({ title: "A" }), banner({ title: "B" }), banner({ title: "C" })], art, NOW);
+  assert.equal(urls.length, 3);
+  assert.equal(warnings.length, 3);
 });

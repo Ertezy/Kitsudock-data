@@ -6,8 +6,8 @@ import { mergeHub, sectionKey } from "../src/merge.ts";
 import { GAME_IDS, type HubData, type HubGame, type Item, type SourceRun } from "../src/types.ts";
 import { bannerStarts, parseOverrides } from "../src/overrides.ts";
 import { KURO_MENU_URL, kuroArticleJsonUrl, kuroArticleUrl, kuroBanners, unreadableAnnouncement, type KuroBannerFact } from "../src/sources/kuro.ts";
-import { KURO_SIGNAL, SOURCES, emptyMemory, fetchKuroAnnouncements, kuroFactsFromMemory } from "../src/sources/registry.ts";
-import { MAX_BANNERS_PER_GAME, MAX_KURO_ARTICLES_PER_RUN } from "../src/validate.ts";
+import { KURO_SIGNAL, SOURCES, emptyMemory, fetchKuroAnnouncements, kuroBannersFromMemory, kuroFactsFromMemory } from "../src/sources/registry.ts";
+import { MAX_BANNERS_PER_GAME, MAX_KURO_ARTICLES_PER_RUN, MAX_KURO_BANNERS_PER_ARTICLE } from "../src/validate.ts";
 
 type Route = (url: URL) => HttpResponse | undefined;
 
@@ -747,6 +747,57 @@ test("анонсы Kuro: до предела читаются все стать�
   await fetchKuroAnnouncements({ http: k.http, now: NOW, memory });
   assert.equal(k.site.seen.filter((r) => r.url.includes("/article/")).length, 2, "анонс и патчноут");
   assert.deepEqual(memory.kuroFacts, { "9001": [FACT] });
+});
+
+// Баннеров Kuro в файле не больше предела, сколько бы блоков ни было в статье и сколько бы статей ни отдало меню.
+/** Статья из `count` блоков баннеров; срок начала — на `minute` минут позже десяти часов, чтобы у статей были разные начала. */
+const bannerBlocks = (id: number, count: number, minute: number) =>
+  Array.from(
+    { length: count },
+    (_, i) =>
+      `<p>[Synthetic ${id}/${i}] Featured Resonator Convene</p><p>5-Star Resonator: Name ${id}/${i}, 4-Star Resonators: B receive boosted drop rates!</p>` +
+      `<p>2026-10-01 10:${String(minute).padStart(2, "0")} - 2026-10-22 11:59 (server time)</p>`,
+  ).join("");
+
+test("анонсы Kuro: одна статья с 3000 блоками баннеров — в памяти не больше десяти фактов", async () => {
+  assert.equal(MAX_KURO_BANNERS_PER_ARTICLE, 10);
+  const k = kuroSite();
+  k.site.html[9001] = bannerBlocks(9001, 3000, 0);
+  const memory = emptyMemory();
+  const result = await fetchKuroAnnouncements({ http: k.http, now: NOW, memory });
+  assert.equal(result.ok, true);
+  assert.equal(memory.kuroFacts["9001"]?.length, MAX_KURO_BANNERS_PER_ARTICLE);
+  assert.ok(Buffer.byteLength(JSON.stringify(memory), "utf8") < 20_000, "память не раздувается");
+  assert.equal(kuroBannersFromMemory(memory, NOW).length, MAX_KURO_BANNERS_PER_ARTICLE);
+});
+
+test("анонсы Kuro: тридцать статей по десять баннеров — в файл идут не больше 50, самые новые", async () => {
+  assert.equal(MAX_BANNERS_PER_GAME, 50);
+  const k = kuroSite();
+  const stamp = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+  const ids = Array.from({ length: MAX_KURO_ARTICLES_PER_RUN }, (_, i) => 20_000 + i);
+  k.site.menu = ids.map((articleId, i) => ({
+    articleId,
+    articleTitle: "[Version 9.9 Featured Resonator/Weapon Convene: Phase I]",
+    startTime: stamp(Date.UTC(2026, 8, 15, 23, 59) - i * 60_000),
+  }));
+  ids.forEach((id, i) => {
+    k.site.html[id] = bannerBlocks(id, 3000, i); // начало тем позже, чем больше i
+    k.site.etags[id] = `"e${id}"`;
+  });
+  const memory = emptyMemory();
+  assert.equal((await fetchKuroAnnouncements({ http: k.http, now: NOW, memory })).ok, true);
+  const all = kuroBanners(kuroFactsFromMemory(memory, memory.kuro), memory.kuroReleases, NOW);
+  assert.equal(all.length, MAX_KURO_ARTICLES_PER_RUN * MAX_KURO_BANNERS_PER_ARTICLE, "до предела на файл баннеров 300");
+  const capped = kuroBannersFromMemory(memory, NOW);
+  assert.equal(capped.length, MAX_BANNERS_PER_GAME);
+  const newestStart = Math.max(...all.map((b) => b.startsAt));
+  assert.equal(capped[0]!.startsAt, newestStart, "самые новые первыми");
+  assert.deepEqual(
+    [...new Set(capped.map((b) => b.startsAt))].sort((a, b) => b - a),
+    [...new Set(all.map((b) => b.startsAt))].sort((a, b) => b - a).slice(0, 5),
+    "пять самых новых начал по десять баннеров",
+  );
 });
 
 // Таблица Endfield: сколько бы строк ни отдала страница, баннеров не больше предела, а миниатюры — одним запросом.

@@ -18,6 +18,7 @@ import {
   isFresh,
   kuroArticleJsonUrl,
   kuroBannerFacts,
+  kuroBanners,
   maintenanceEnd,
   type Announcement,
   type AnnouncementFacts,
@@ -172,7 +173,7 @@ function ennead(game: "genshin" | "hsr" | "zzz", section: "codes" | "banners"): 
  * баннеров один предел, а миниатюры просятся только для оставшихся: сколько бы строк ни
  * отдала страница, это один запрос.
  */
-function newestLive<T>(items: T[], bannerOf: (item: T) => Banner, now: number): T[] {
+export function newestLive<T>(items: T[], bannerOf: (item: T) => Banner, now: number): T[] {
   return items
     .filter((item) => isLive("banners", bannerOf(item), now))
     .sort((a, b) => bannerOf(b).startsAt - bannerOf(a).startsAt)
@@ -415,3 +416,11 @@ async function readKuroArticles(ctx: SourceContext, announcements: Announcement[
 /** Анонсы вместе с баннерами, что разобраны из их статей и лежат в памяти. */
 export const kuroFactsFromMemory = (memory: SourceMemory, announcements: Announcement[]): AnnouncementFacts[] =>
   announcements.map((announcement) => ({ announcement, banners: memory.kuroFacts[String(announcement.articleId)] ?? [] }));
+
+/**
+ * Баннеры Kuro для файла: из памяти, идущие и будущие, самые новые первыми и не больше
+ * MAX_BANNERS_PER_GAME — тот же предел, что у баннеров любого другого источника. Так
+ * число баннеров Kuro и запросов арта к ним не зависит от того, сколько их отдали статьи.
+ */
+export const kuroBannersFromMemory = (memory: SourceMemory, now: number): Banner[] =>
+  newestLive(kuroBanners(kuroFactsFromMemory(memory, memory.kuro), memory.kuroReleases, now), (banner) => banner, now);

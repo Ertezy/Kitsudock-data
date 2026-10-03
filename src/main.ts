@@ -7,9 +7,9 @@ import { mergeHub, sameData, sectionKey } from "./merge.ts";
 import { applyOverrides, bannerStarts, parseOverrides, type Overrides } from "./overrides.ts";
 import { APP_RELEASE, fetchAppRelease } from "./sources/appRelease.ts";
 import { refreshArt, withArt } from "./sources/art.ts";
-import { kuroBanners, unreadableAnnouncement, withKuroBanners } from "./sources/kuro.ts";
+import { unreadableAnnouncement, withKuroBanners } from "./sources/kuro.ts";
 import { LAUNCHER_ART, fetchLauncherArt, withLauncherArt } from "./sources/launcherArt.ts";
-import { KURO_SIGNAL, SOURCES, fetchKuroAnnouncements, kuroFactsFromMemory } from "./sources/registry.ts";
+import { KURO_SIGNAL, SOURCES, fetchKuroAnnouncements, kuroBannersFromMemory } from "./sources/registry.ts";
 import {
   PAGES_URL,
   REPUBLISH_SECONDS,
@@ -157,9 +157,8 @@ const base = mergeHub({ previous: state.base, catalog, runs, now });
 
 // Баннеры по официальным анонсам Kuro — пока фандом их не знает. Считаются каждый прогон
 // из памяти (в ней анонсы, пока идёт хотя бы один их баннер) и в state.base не попадают:
-// base остаётся данными одного фандома.
-const kuro = kuroBanners(kuroFactsFromMemory(memory, memory.kuro), memory.kuroReleases, now);
-const withKuro = withKuroBanners(base, kuro);
+// base остаётся данными одного фандома. Число баннеров ограничено, как у остальных источников.
+const withKuro = withKuroBanners(base, kuroBannersFromMemory(memory, now));
 
 let overrides: Overrides = { codes: [], banners: [], hide: [] };
 let overridesErrors: string[] = [];

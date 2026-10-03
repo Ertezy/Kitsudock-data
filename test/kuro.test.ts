@@ -16,6 +16,7 @@ import {
   type KuroBannerFact,
 } from "../src/sources/kuro.ts";
 import type { Banner, HubData } from "../src/types.ts";
+import { MAX_KURO_BANNERS_PER_ARTICLE } from "../src/validate.ts";
 import { runBounded } from "./bounded.ts";
 
 const utc = (y: number, mo: number, d: number, h: number, mi: number) => Date.UTC(y, mo - 1, d, h, mi) / 1000;
@@ -500,5 +501,79 @@ test("строки блока: 60 000 пробелов внутри имени 5
   for (const line of lines) {
     const facts = await runBounded<KuroBannerFact[]>("../src/sources/kuro.ts", "kuroBannerFacts", [[BLOCK_HEAD, line], null]);
     assert.deepEqual(facts, [], line.slice(0, 20));
+  }
+});
+
+// Пределы: одна статья и весь список баннеров Kuro не растут вместе с тем, что отдал сайт.
+
+/** Статья из `count` блоков баннеров с придуманными названиями и одним и тем же сроком. */
+const blocks = (count: number, prefix = "Synthetic"): string[] =>
+  Array.from({ length: count }, (_, i) => [
+    `[${prefix} ${i}] Featured Resonator Convene`,
+    `5-Star Resonator: Name ${i}, 4-Star Resonators: B receive boosted drop rates!`,
+    "2026-10-01 10:00 - 2026-10-22 11:59 (server time)",
+  ]).flat();
+
+test("факты: из статьи с 3000 блоками баннеров берутся первые десять", () => {
+  assert.equal(MAX_KURO_BANNERS_PER_ARTICLE, 10);
+  const facts = kuroBannerFacts(blocks(3000));
+  assert.deepEqual(
+    facts.map((f) => f.title),
+    Array.from({ length: 10 }, (_, i) => `Synthetic ${i}`),
+  );
+  assert.equal(kuroBannerFacts(blocks(10)).length, 10, "ровно предел — все");
+  assert.equal(kuroBannerFacts(blocks(3)).length, 3, "обычный анонс не урезается");
+});
+
+test("факты: блок без дат предел не занимает — берутся десять настоящих баннеров", () => {
+  const broken = ["[Broken] Featured Resonator Convene", "5-Star Resonator: Nobody"];
+  const facts = kuroBannerFacts([...broken, ...broken, ...blocks(30)]);
+  assert.equal(facts.length, 10);
+  assert.equal(facts[0]!.title, "Synthetic 0");
+});
+
+test("баннеры Kuro: сводка с 20 000 баннерами укладывается в предел времени", async () => {
+  const start = utc(2026, 10, 1, 3, 0);
+  const kuro = Array.from({ length: 20_000 }, (_, i) => wuwa(`Synthetic ${i}`, start + i, { url: kuroArticleUrl(9001) }));
+  const merged = await runBounded<HubData>("../src/sources/kuro.ts", "withKuroBanners", [hubOf([wuwa("Fandom", start)]), kuro]);
+  assert.equal(merged.banners.length, 20_001);
+  // Одно название и начала дальше двух суток друг от друга — все разные баннеры, все в одной связке.
+  const same = Array.from({ length: 20_000 }, (_, i) => wuwa("Same Title", start + i * 3 * 86400));
+  assert.equal((await runBounded<HubData>("../src/sources/kuro.ts", "withKuroBanners", [hubOf([]), same])).banners.length, 20_000);
+  // Одно название и начала в пределах двух суток — один баннер.
+  const close = Array.from({ length: 20_000 }, (_, i) => wuwa("Same Title", start + i));
+  assert.equal((await runBounded<HubData>("../src/sources/kuro.ts", "withKuroBanners", [hubOf([]), close])).banners.length, 1);
+  // Баннеров много и у файла.
+  const own = Array.from({ length: 20_000 }, (_, i) => wuwa(`Own ${i}`, start + i));
+  const again = await runBounded<HubData>("../src/sources/kuro.ts", "withKuroBanners", [hubOf(own), kuro.slice(0, 10)]);
+  assert.equal(again.banners.length, 20_010);
+});
+
+/** Прежняя сверка перебором — образец, с которым сравнивается быстрая. */
+function naiveWithKuro(hub: HubData, kuro: Banner[]): Banner[] {
+  const comparable = (title: string) => title.replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+/g, " ").trim().toLowerCase();
+  const same = (a: Banner, b: Banner) => a.gameId === b.gameId && comparable(a.title) === comparable(b.title) && Math.abs(a.startsAt - b.startsAt) <= 172800;
+  const banners = [...hub.banners];
+  for (const banner of kuro) if (!banners.some((b) => same(b, banner))) banners.push(banner);
+  if (banners.length === hub.banners.length) return hub.banners;
+  return banners.sort((a, b) => ["genshin", "hsr", "zzz", "wuthering", "endfield"].indexOf(a.gameId) - ["genshin", "hsr", "zzz", "wuthering", "endfield"].indexOf(b.gameId) || a.startsAt - b.startsAt);
+}
+
+test("быстрая сверка баннеров Kuro даёт тот же результат, что перебор, в том числе на границах двух суток", () => {
+  let seed = 12345;
+  const random = (n: number) => {
+    seed = (seed * 48271) % 2147483647;
+    return seed % n;
+  };
+  const titles = ["Alpha", "alpha ", "Beta’s Banner", "Beta's  banner", "Gamma"];
+  const games = ["wuthering", "genshin"] as const;
+  const origin = utc(2026, 10, 1, 3, 0);
+  // Сдвиги вокруг границы 172 800 с и вокруг границ окон: целое число окон и «окно ± 1 с».
+  const offsets = [0, 1, 172799, 172800, 172801, 345599, 345600, 345601, 86400, 259200];
+  const make = (): Banner => wuwa(titles[random(titles.length)]!, origin + offsets[random(offsets.length)]! * (random(2) === 0 ? 1 : -1) + random(5) * 172800, { gameId: games[random(games.length)]! });
+  for (let round = 0; round < 50; round++) {
+    const hub = hubOf(Array.from({ length: random(15) }, make));
+    const kuro = Array.from({ length: random(40) }, make);
+    assert.deepEqual(withKuroBanners(hub, kuro).banners, naiveWithKuro(hub, kuro), `раунд ${round}`);
   }
 });
