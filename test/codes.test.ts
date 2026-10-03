@@ -209,3 +209,19 @@ test("Genshin: незакрытая {{ выше строк (в том числе
     assert.equal(r.dropped, 0);
   }
 });
+
+test("ennead.cc: награда с одиноким суррогатом — запись выброшена и посчитана, целая пара проходит", () => {
+  const r = parseEnneadCodes(
+    {
+      active: [
+        { code: "2BJ64QRZ7RT8", rewards: ["\ud800"] },
+        { code: "2BJ64QRZ7RT9", rewards: ["Primogem \udfff"] },
+        { code: "2BJ64QRZ7RTA", rewards: ["Primogem ×60", "\u{1f3b4}"] },
+      ],
+    },
+    "genshin",
+  );
+  assert.deepEqual(r.codes.map((code) => code.code), ["2BJ64QRZ7RTA"]);
+  assert.equal(r.dropped, 2);
+  assert.doesNotMatch(JSON.stringify(r.codes), /\\ud[89a-f]/i);
+});

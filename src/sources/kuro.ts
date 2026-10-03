@@ -123,12 +123,17 @@ export interface KuroBannerFact {
 
 const NAMED_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 
-/** Именованные и числовые (&#10022;, &#x2726;) сущности; незнакомые остаются как есть. */
+/**
+ * Именованные и числовые (&#10022;, &#x2726;) сущности; незнакомые остаются как есть. Числовая
+ * сущность раскрывается только в настоящий знак: нуль, зона суррогатов (0xD800–0xDFFF: из неё вышла
+ * бы одинокая половина пары, которую читатель файла не принимает) и номера за пределом Unicode
+ * остаются текстом.
+ */
 const decodeEntities = (text: string) =>
   text.replace(/&(?:#(\d+)|#x([0-9a-f]+)|([a-z]+));/gi, (whole, dec?: string, hex?: string, name?: string) => {
     if (name !== undefined) return NAMED_ENTITIES[name.toLowerCase()] ?? whole;
     const code = dec !== undefined ? Number(dec) : parseInt(hex!, 16);
-    return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+    return code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : whole;
   });
 
 // Начало тега, который означает перевод строки: `<br>`, `<br/>`, `<p …>`, `</div>`, `<li>`, `<h1>`…

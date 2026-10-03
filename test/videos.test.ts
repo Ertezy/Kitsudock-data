@@ -131,3 +131,10 @@ test("миниатюра с логином, портом, IP-адресом ил
   assert.equal(r.videos.length, 6);
   assert.deepEqual(r.videos.map((v) => v.thumb), [null, null, null, null, null, "https://i3.ytimg.com/vi/good/hqdefault.jpg"]);
 });
+
+test("ролик с одиноким суррогатом в названии выброшен, с целой парой — нет", () => {
+  const xml = `<feed>${entry("aaaaaaaaaaa", "2026-09-15T09:00:00+00:00", "Bad \ud800")}${entry("bbbbbbbbbbb", "2026-09-14T09:00:00+00:00", "Good \u{1f3b4}")}</feed>`;
+  const r = parseYoutubeFeed(xml, "endfield", CHANNELS.en.endfield, "en");
+  assert.deepEqual(r.videos.map((x) => x.title), ["Good \u{1f3b4}"]);
+  assert.equal(r.dropped, 1);
+});

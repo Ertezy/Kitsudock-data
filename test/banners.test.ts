@@ -350,3 +350,10 @@ test("ennead.cc: нецелое время баннера — запись вы�
   assert.deepEqual(r.banners.map((b) => b.title), ["Flins"]);
   assert.deepEqual(validateHub(hubWith(r.banners)), []);
 });
+
+test("ennead.cc: имя персонажа с одиноким суррогатом — баннер выброшен и посчитан", () => {
+  const entry = (name: string) => ({ characters: [{ name, rarity: 5 }], start_time: 1788256800, end_time: 1790060399 });
+  const r = parseEnneadBanners({ banners: [entry("Flins\ud800"), entry("\udfffAino"), entry("Aino \u{1f3b4}")] }, "genshin");
+  assert.deepEqual(r.banners.map((x) => x.title), ["Aino \u{1f3b4}"]);
+  assert.equal(r.dropped, 2);
+});

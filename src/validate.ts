@@ -32,25 +32,30 @@ export const MAX_KURO_BANNERS_PER_ARTICLE = 10;
 // Сколько баннеров без картинки за прогон проверяется на арт прошлого запуска; остальные ждут следующего прогона.
 export const MAX_ART_LOOKUPS_PER_RUN = 20;
 
-/** Награда кода умещается в предел длины. */
+// Текст в файле — корректный UTF-16, без одиноких половин суррогатной пары. JSON.stringify пишет
+// такую половину как «\ud800», а читатель файла в приложении (serde_json) её отвергает, и весь файл
+// не читается. Источники такие знаки приносят (JSON с «\ud800», числовая сущность &#55296;), поэтому
+// проверка стоит во всех общих проверках текста, а запись с ней парсер выбрасывает.
+
+/** Награда кода умещается в предел длины и без одиноких суррогатов. */
 export function rewardsFits(rewards: string): boolean {
-  return rewards.length <= REWARDS_MAX;
+  return rewards.length <= REWARDS_MAX && rewards.isWellFormed();
 }
 
 // Одна проверка на вид записи — и у парсеров, и у validateHub. Запись, не прошедшую
 // её, парсер выбрасывает сам, а не отдаёт на проверку всего файла.
 
-/** Название баннера: не пустое (одни пробелы — пусто) и не длиннее предела. */
-export const bannerTitleOk = (title: string): boolean => title.trim() !== "" && title.length <= BANNER_TITLE_MAX;
+/** Название баннера: не пустое (одни пробелы — пусто), не длиннее предела, без одиноких суррогатов. */
+export const bannerTitleOk = (title: string): boolean => title.trim() !== "" && title.length <= BANNER_TITLE_MAX && title.isWellFormed();
 
-/** Имя в списке персонажей: не пустое (одни пробелы — пусто) и не длиннее предела. */
-export const featuredNameOk = (name: string): boolean => name.trim() !== "" && name.length <= FEATURED_NAME_MAX;
+/** Имя в списке персонажей: не пустое (одни пробелы — пусто), не длиннее предела, без одиноких суррогатов. */
+export const featuredNameOk = (name: string): boolean => name.trim() !== "" && name.length <= FEATURED_NAME_MAX && name.isWellFormed();
 
 /** Список персонажей баннера: не больше FEATURED_MAX имён, каждое проходит featuredNameOk. */
 export const featuredListOk = (featured: string[]): boolean => featured.length <= FEATURED_MAX && featured.every(featuredNameOk);
 
-/** Название ролика: до предела длины (пустое допустимо). */
-export const videoTitleOk = (title: string): boolean => title.length <= VIDEO_TITLE_MAX;
+/** Название ролика: до предела длины (пустое допустимо), без одиноких суррогатов. */
+export const videoTitleOk = (title: string): boolean => title.length <= VIDEO_TITLE_MAX && title.isWellFormed();
 
 /** Код: латинские буквы и цифры, 4–40 знаков. */
 export const codeOk = (code: string): boolean => CODE_PATTERN.test(code);
@@ -64,9 +69,10 @@ export const URL_MAX = 2048;
 export const APP_URL_PREFIX = "https://github.com/Ertezy/Kitsudock/releases/";
 
 // Пробелы всех видов, управляющие знаки (Cc), невидимые форматирующие (Cf: нулевой пробел,
-// переключатели направления текста) и обратная косая черта (\x5c): разбор адреса читает её
-// как «/», и адрес с ней у разных читателей получает разных хозяев.
-const URL_FORBIDDEN = /[\s\p{Cc}\p{Cf}\x5c]/u;
+// переключатели направления текста), одинокие суррогаты (Cs: в файле они записались бы как «\ud800»)
+// и обратная косая черта (\x5c): разбор адреса читает её как «/», и адрес с ней у разных читателей
+// получает разных хозяев. Целая суррогатная пара — один знак, не Cs, и не мешает.
+const URL_FORBIDDEN = /[\s\p{Cc}\p{Cf}\p{Cs}\x5c]/u;
 const IPV4_HOST = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 // Имя из непустых меток через точку: хотя бы одна точка, ни точки на конце, ни пустой метки.
 // Так не проходят «localhost», «hsr», «localhost.» и «e..org».
@@ -124,7 +130,8 @@ export function bannerFits(title: string, featured: string[]): boolean {
 
 const isInt = (value: unknown) => Number.isInteger(value);
 const urlOrNull = (value: unknown) => value === null || isPublicHttpsUrl(value);
-const text = (value: unknown, min: number, max: number) => typeof value === "string" && value.length >= min && value.length <= max;
+const text = (value: unknown, min: number, max: number) =>
+  typeof value === "string" && value.length >= min && value.length <= max && value.isWellFormed();
 
 export function validateHub(hub: HubData, maxBytes = MAX_FILE_BYTES): string[] {
   const errors: string[] = [];

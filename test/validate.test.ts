@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appUrlOk, bannerTitleOk, codeOk, featuredNameOk, isPublicHttpsUrl, validateHub, videoTitleOk, youtubeUrlOk } from "../src/validate.ts";
+import { appUrlOk, bannerTitleOk, codeOk, featuredListOk, featuredNameOk, isPublicHttpsUrl, rewardsFits, validateHub, videoTitleOk, youtubeUrlOk } from "../src/validate.ts";
 import type { HubData } from "../src/types.ts";
 
 const good = (): HubData => ({
@@ -414,4 +414,82 @@ test("validateHub: app.url — только страница релизов Kits
   }
   hub.app = { version: "0.1.1", url: "https://github.com/Ertezy/Kitsudock/releases/tag/v0.1.1" };
   assert.deepEqual(validateHub(hub), []);
+});
+
+// Одинокая половина суррогатной пары: JSON.stringify пишет её как «\ud800», а читатель файла
+// (serde_json в приложении) такую запись отвергает целиком, и весь файл не читается.
+const LONE_HIGH = "\ud800";
+const LONE_LOW = "\udfff";
+const EMOJI = "\u{1f3b4}"; // целая пара: допустима
+
+test("общие проверки записей: одинокий суррогат отвергается, целая пара проходит", () => {
+  for (const lone of [LONE_HIGH, LONE_LOW, `x${LONE_HIGH}`, `${LONE_LOW}x`, `${LONE_LOW}${LONE_HIGH}`]) {
+    const at = JSON.stringify(lone);
+    assert.equal(bannerTitleOk(lone + "x"), false, `название баннера ${at}`);
+    assert.equal(featuredNameOk(lone + "x"), false, `имя ${at}`);
+    assert.equal(featuredListOk(["ok", lone + "x"]), false, `список имён ${at}`);
+    assert.equal(rewardsFits(lone), false, `награда ${at}`);
+    assert.equal(videoTitleOk(lone), false, `название ролика ${at}`);
+  }
+  assert.equal(bannerTitleOk(`Banner ${EMOJI}`), true);
+  assert.equal(featuredNameOk(EMOJI), true);
+  assert.equal(featuredListOk([EMOJI]), true);
+  assert.equal(rewardsFits(`Gift ${EMOJI}`), true);
+  assert.equal(videoTitleOk(`Trailer ${EMOJI}`), true);
+  assert.equal(rewardsFits(""), true, "пустая награда допустима, как и раньше");
+});
+
+test("адрес: одинокий суррогат в пути, запросе, якоре и имени хоста отвергается", () => {
+  for (const url of [
+    `https://example.org/${LONE_HIGH}`,
+    `https://example.org/a${LONE_LOW}b`,
+    `https://example.org/?q=${LONE_HIGH}`,
+    `https://example.org/#${LONE_LOW}`,
+    `https://exam${LONE_HIGH}ple.org/x`,
+  ]) {
+    assert.equal(isPublicHttpsUrl(url), false, JSON.stringify(url));
+  }
+  assert.equal(isPublicHttpsUrl(`https://example.org/${EMOJI}`), true, "целая пара — как и раньше");
+});
+
+// Поле файла и его значение с одиноким суррогатом.
+const SURROGATE_FIELDS: [string, (hub: HubData) => void][] = [
+  ["games[0].title", (h) => void (h.games[0]!.title = `Test${LONE_HIGH}`)],
+  ["games[0].redeemUrl", (h) => void (h.games[0]!.redeemUrl = `https://hsr.hoyoverse.com/gift?code={code}${LONE_HIGH}`)],
+  ["games[0].background.image", (h) => void (h.games[0]!.background = { image: `https://cdn.example.test/${LONE_LOW}/a.webp` })],
+  ["games[0].background.video", (h) => void (h.games[0]!.background = { image: "https://cdn.example.test/a.webp", video: `https://cdn.example.test/${LONE_LOW}/a.webm` })],
+  ["codes[0].rewards", (h) => void (h.codes[0]!.rewards = `Jade${LONE_HIGH}`)],
+  ["codes[0].region", (h) => void (h.codes[0]!.region = LONE_HIGH)],
+  ["codes[0].source", (h) => void (h.codes[0]!.source = `https://wiki.example.test/${LONE_HIGH}`)],
+  ["banners[0].title", (h) => void (h.banners[0]!.title = `Banner${LONE_LOW}`)],
+  ["banners[0].featured", (h) => void (h.banners[0]!.featured = [`Name${LONE_HIGH}`])],
+  ["banners[0].image", (h) => void (h.banners[0]!.image = `https://cdn.example.test/a${LONE_HIGH}.png`)],
+  ["banners[0].url", (h) => void (h.banners[0]!.url = `https://wiki.example.test/${LONE_LOW}`)],
+  ["videos[0].title", (h) => void (h.videos[0]!.title = `Trailer${LONE_HIGH}`)],
+  ["videos[0].url", (h) => void (h.videos[0]!.url = `https://www.youtube.com/watch?v=a${LONE_HIGH}`)],
+  ["videos[0].thumb", (h) => void (h.videos[0]!.thumb = `https://i1.ytimg.com/vi/a${LONE_LOW}/hqdefault.jpg`)],
+  ["app.url", (h) => void (h.app = { version: "0.1.1", url: `https://github.com/Ertezy/Kitsudock/releases/tag/v1${LONE_HIGH}` })],
+];
+
+test("validateHub: одинокий суррогат в любом текстовом поле и в любой ссылке — ошибка с путём к полю", () => {
+  for (const [path, set] of SURROGATE_FIELDS) {
+    const hub = good();
+    set(hub);
+    assert.ok(
+      validateHub(hub).some((e) => e.startsWith(path)),
+      `${path} должно отвергать одинокий суррогат`,
+    );
+  }
+});
+
+test("validateHub: целая суррогатная пара в тексте проходит, а в файле нет ни одного «\\ud8»–«\\udf»", () => {
+  assert.equal(JSON.stringify(LONE_HIGH), '"\\ud800"', "основание: одинокий суррогат в файле записался бы так");
+  const hub = good();
+  hub.games[0]!.title = `Game ${EMOJI}`;
+  hub.codes[0]!.rewards = `Jade ${EMOJI}`;
+  hub.banners[0]!.title = `Banner ${EMOJI}`;
+  hub.banners[0]!.featured = [`Name ${EMOJI}`];
+  hub.videos[0]!.title = `Trailer ${EMOJI}`;
+  assert.deepEqual(validateHub(hub), []);
+  assert.doesNotMatch(JSON.stringify(hub), /\\u[dD][89a-fA-F][0-9a-fA-F]{2}/);
 });

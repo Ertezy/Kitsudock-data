@@ -577,3 +577,34 @@ test("быстрая сверка баннеров Kuro даёт тот же р�
     assert.deepEqual(withKuroBanners(hub, kuro).banners, naiveWithKuro(hub, kuro), `раунд ${round}`);
   }
 });
+
+test("сущности: номер из суррогатной зоны, нуль и номер за пределом Unicode остаются как есть, настоящие знаки раскрываются", () => {
+  const literal = "a &#55296; b &#xD800; c &#57343; d &#xDFFF; e &#0; f &#1114112; g &#x110000; h &#99999999999999999999;";
+  const text = articleText({ articleContent: `<p>${literal}</p>` });
+  assert.deepEqual(text, [literal]);
+  assert.ok(text![0]!.isWellFormed());
+  const decoded = articleText({ articleContent: "<p>&#128512; &#x1F600; &#10022; &#xDFFF0; &#xD7FF; &#xE000; &#1114111;</p>" })![0]!;
+  assert.equal(decoded, "\u{1f600} \u{1f600} ✦ \u{dfff0} ퟿  \u{10ffff}", "рядом с зоной суррогатов знаки раскрываются");
+  assert.ok(decoded.isWellFormed());
+});
+
+test("сущности в названии статьи и в имени баннера: одинокого суррогата не получается", () => {
+  assert.equal(articleTitle({ articleTitle: "[A&#55296;] Featured Resonator Convene" }), "[A&#55296;] Featured Resonator Convene");
+  const lines = articleText({
+    articleContent: "<p>[Test] Featured Resonator Convene</p><p>5-Star Resonator: Name&#55296;</p><p>2026-10-01 10:00 - 2026-10-22 11:59 (server time)</p>",
+  })!;
+  const facts = kuroBannerFacts(lines);
+  assert.equal(facts.length, 1);
+  assert.ok(facts[0]!.title.isWellFormed() && facts[0]!.featured.isWellFormed());
+  assert.equal(facts[0]!.featured, "Name&#55296;", "сущность осталась текстом из знаков");
+});
+
+test("баннер Kuro с одиноким суррогатом в названии или имени не попадает в список", () => {
+  const fact = (title: string, featured: string): KuroBannerFact => ({ title, featured, start: { kind: "at", at: utc(2026, 10, 1, 3, 0) }, endsAt: utc(2026, 10, 22, 8, 59) });
+  const banners = kuroBanners(
+    [{ announcement: announcement(9001, PUBLISHED), banners: [fact("Bad\ud800", "A"), fact("Bad", "A\udfff"), fact("Good", "A")] }],
+    {},
+    NOW,
+  );
+  assert.deepEqual(banners.map((b) => b.title), ["Good"]);
+});

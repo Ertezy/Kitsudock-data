@@ -172,3 +172,16 @@ test("правки: image и url — только обычные https-адре�
     }
   }
 });
+
+test("правки: одинокий суррогат в награде, названии, именах и ссылках — ошибка", () => {
+  const banner = { game: "wuthering", title: "T", starts: "2026-09-10 10:00 UTC+1", ends: "2026-09-20 10:00 UTC+1" };
+  const bad = [
+    { codes: [{ game: "endfield", code: "GOODCODE", rewards: "Jade\ud800" }] },
+    { banners: [{ ...banner, title: "T\udfff" }] },
+    { banners: [{ ...banner, featured: ["A\ud800"] }] },
+    { banners: [{ ...banner, image: "https://cdn.example.test/\ud800.png" }] },
+    { banners: [{ ...banner, url: "https://wiki.example.test/\udfff" }] },
+  ];
+  for (const file of bad) assert.equal(parseOverrides(file).ok, false, JSON.stringify(file));
+  assert.equal(parseOverrides({ banners: [{ ...banner, title: "T \u{1f3b4}" }] }).ok, true);
+});
