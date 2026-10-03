@@ -2,7 +2,7 @@
 
 import { atOffset, parseIsoLike, parseOffset } from "./time.ts";
 import { GAME_IDS, type Banner, type Code, type GameId, type HubData } from "./types.ts";
-import { bannerTitleOk, codeOk, featuredListOk, rewardsFits } from "./validate.ts";
+import { bannerTitleOk, codeOk, featuredListOk, isPublicHttpsUrl, rewardsFits } from "./validate.ts";
 
 export interface CodeOverride {
   game: GameId;
@@ -39,7 +39,6 @@ export function parseMoment(text: string): number | null {
 }
 
 const isGame = (value: unknown): value is GameId => typeof value === "string" && (GAME_IDS as readonly string[]).includes(value);
-const isHttps = (value: unknown) => typeof value === "string" && value.startsWith("https://");
 type Entry = Record<string, unknown>;
 const entries = (value: unknown): Entry[] => (Array.isArray(value) ? (value as Entry[]) : []);
 
@@ -86,8 +85,8 @@ export function parseOverrides(json: unknown): { ok: true; overrides: Overrides 
     if (e.featured !== undefined && !featuredListOk(e.featured as string[])) {
       return void errors.push(`${at}: featured — до 10 имён по 80 знаков, без пустых`);
     }
-    if ((e.image !== undefined && !isHttps(e.image)) || (e.url !== undefined && !isHttps(e.url))) {
-      return void errors.push(`${at}: image и url только https://`);
+    if ((e.image !== undefined && !isPublicHttpsUrl(e.image)) || (e.url !== undefined && !isPublicHttpsUrl(e.url))) {
+      return void errors.push(`${at}: image и url — обычные https-адреса (без логина, порта и IP-адреса, до 2048 знаков)`);
     }
     overrides.banners.push({
       game: e.game,

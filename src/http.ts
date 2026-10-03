@@ -14,10 +14,21 @@ export interface HttpResponse {
   validators: Validators;
 }
 
-export type FetchLike = (
-  url: string,
-  init: { headers: Record<string, string>; signal: AbortSignal },
-) => Promise<{ status: number; text(): Promise<string>; headers: { get(name: string): string | null } }>;
+/** Ответ fetch в той части, что нужна сборщику. Настоящий Response подходит как есть. */
+export interface FetchResponse {
+  status: number;
+  headers: { get(name: string): string | null };
+  text(): Promise<string>;
+  /** Адрес ответа после всех перенаправлений (у Response — res.url). Нет или пуст — не проверяется. */
+  url?: string;
+  /**
+   * Тело потоком: fetch отдаёт уже распакованные байты, и читаются они с обрывом на потолке
+   * размера. Нет потока (null или поля нет) — тело берётся целиком из text().
+   */
+  body?: ReadableStream<Uint8Array> | null;
+}
+
+export type FetchLike = (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => Promise<FetchResponse>;
 
 export interface HttpOptions {
   fetch?: FetchLike;
@@ -54,26 +65,69 @@ export function createHttp(options: HttpOptions = {}): Http {
     if (validators.etag) headers["If-None-Match"] = validators.etag;
     if (validators.lastModified) headers["If-Modified-Since"] = validators.lastModified;
     const res = await doFetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
+    // fetch сам идёт по перенаправлениям, а res.url — конечный адрес. Если он ушёл с https,
+    // ответ не читается: по http содержимое мог бы подменить любой, кто сидит на канале.
+    if (res.url && !res.url.startsWith("https://")) {
+      discard(res);
+      throw new NotHttpsError(res.url, url);
+    }
     const fresh: Validators = {};
     const etag = res.headers.get("etag");
     const lastModified = res.headers.get("last-modified");
     if (etag) fresh.etag = etag;
     if (lastModified) fresh.lastModified = lastModified;
-    if (res.status === 304) return { status: 304, body: "", validators: validators };
-    if (res.status !== 200) throw new StatusError(res.status, url);
-    const body = await res.text();
-    if (body.length > maxBytes) throw new TooLargeError(maxBytes, url);
-    return { status: 200, body, validators: fresh };
+    if (res.status === 304) {
+      discard(res);
+      return { status: 304, body: "", validators: validators };
+    }
+    if (res.status !== 200) {
+      discard(res);
+      throw new StatusError(res.status, url);
+    }
+    return { status: 200, body: await readBody(res, url), validators: fresh };
+  }
+
+  /** Отпускает соединение, не читая тело. */
+  function discard(res: FetchResponse): void {
+    void res.body?.cancel().catch(() => {});
+  }
+
+  /**
+   * Тело как строка. Байты считаются по ходу чтения (уже распакованные), и как только их
+   * больше потолка, чтение обрывается, а поток отменяется: сжатый ответ не вырастет в памяти сверх потолка.
+   */
+  async function readBody(res: FetchResponse, url: string): Promise<string> {
+    if (!res.body) {
+      const text = await res.text();
+      if (Buffer.byteLength(text, "utf8") > maxBytes) throw new TooLargeError(maxBytes, url);
+      return text;
+    }
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxBytes) throw new TooLargeError(maxBytes, url);
+        chunks.push(value);
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => {});
+      throw error;
+    }
+    return new TextDecoder().decode(Buffer.concat(chunks, total));
   }
 
   async function withRetry(url: string, validators: Validators, extra: Record<string, string>): Promise<HttpResponse> {
     try {
       return await attempt(url, validators, extra);
     } catch (error) {
-      // Не повторяем только превышение потолка размера и коды ответа не из RETRYABLE
+      // Не повторяем превышение потолка размера, уход с https и коды ответа не из RETRYABLE
       // (например, 404) — это не временные сбои. Сеть, таймаут и повторяемые коды
       // получают один повтор после паузы.
-      if (error instanceof TooLargeError) throw error;
+      if (error instanceof TooLargeError || error instanceof NotHttpsError) throw error;
       if (error instanceof StatusError && !RETRYABLE.has(error.status)) throw error;
       await sleep(retryDelayMs);
       return attempt(url, validators, extra);
@@ -82,7 +136,7 @@ export function createHttp(options: HttpOptions = {}): Http {
 
   return {
     get(url, validators = {}, headers = {}) {
-      if (!url.startsWith("https://")) return Promise.reject(new Error(`только https: ${url}`));
+      if (!url.startsWith("https://")) return Promise.reject(new NotHttpsError(url));
       const host = new URL(url).host;
       const previous = queues.get(host) ?? Promise.resolve();
       const task = previous
@@ -111,5 +165,12 @@ export class StatusError extends Error {
 class TooLargeError extends Error {
   constructor(maxBytes: number, url: string) {
     super(`ответ превысил потолок ${maxBytes} байт: ${url}`);
+  }
+}
+
+/** Адрес запроса или конечный адрес после перенаправлений не https. */
+class NotHttpsError extends Error {
+  constructor(url: string, requested?: string) {
+    super(requested === undefined ? `только https: ${url}` : `только https: ${url} (перенаправление с ${requested})`);
   }
 }

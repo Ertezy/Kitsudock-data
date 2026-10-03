@@ -3,7 +3,7 @@
 
 import { VERSION } from "./sources/appRelease.ts";
 import { CODE_PATTERN } from "./sources/codes.ts";
-import { IMAGE_FILE, VIDEO_FILE } from "./sources/launcherArt.ts";
+import { isImageUrl, isVideoUrl } from "./sources/launcherArt.ts";
 import { VIDEOS_PER_GAME } from "./sources/videos.ts";
 import { GAME_IDS, VIDEO_LANGS, type HubData } from "./types.ts";
 
@@ -50,13 +50,55 @@ export const videoTitleOk = (title: string): boolean => title.length <= VIDEO_TI
 /** Код: латинские буквы и цифры, 4–40 знаков. */
 export const codeOk = (code: string): boolean => CODE_PATTERN.test(code);
 
+// Ссылки. Приложение и сборщик кладут их в разметку и в запросы как есть, поэтому годится
+// только простой публичный https-адрес: без логина, порта и IP-адреса вместо имени.
+
+/** Самый длинный адрес, который принимает файл. */
+export const URL_MAX = 2048;
+/** Страницы релизов приложения: только они годятся для app.url. */
+export const APP_URL_PREFIX = "https://github.com/Ertezy/Kitsudock/releases/";
+
+// Пробелы всех видов, управляющие знаки (Cc), невидимые форматирующие (Cf: нулевой пробел,
+// переключатели направления текста) и обратная косая черта (\x5c): разбор адреса читает её
+// как «/», и адрес с ней у разных читателей получает разных хозяев.
+const URL_FORBIDDEN = /[\s\p{Cc}\p{Cf}\x5c]/u;
+const IPV4_HOST = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+
+/**
+ * Простой публичный https-адрес: строка начинается с «https://», не длиннее URL_MAX,
+ * без пробелов и управляющих знаков, без логина и порта (явного тоже: «:443» разбор прячет),
+ * хост — имя, а не IPv4 и не IPv6. Разбор приводит «2130706433», «0x7f.1» и «127.1»
+ * к 127.0.0.1, поэтому IPv4 ищется в уже разобранном имени.
+ */
+export function isPublicHttpsUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > URL_MAX || !value.startsWith("https://")) return false;
+  if (URL_FORBIDDEN.test(value)) return false;
+  // Начало до первой «/», «?» или «#»: «@» и «:» здесь — логин или порт, в пути и запросе они обычны.
+  const authority = value.slice("https://".length).split(/[/?#]/, 1)[0]!;
+  if (authority.includes("@") || authority.includes(":")) return false;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.port !== "") return false;
+  return !url.hostname.startsWith("[") && !IPV4_HOST.test(url.hostname);
+}
+
+/** Ссылка на ролик: простой https-адрес на www.youtube.com. */
+export const youtubeUrlOk = (url: unknown): url is string => isPublicHttpsUrl(url) && url.startsWith("https://www.youtube.com/");
+
+/** Страница релиза приложения: простой https-адрес из APP_URL_PREFIX. */
+export const appUrlOk = (url: unknown): url is string => isPublicHttpsUrl(url) && url.startsWith(APP_URL_PREFIX);
+
 /** Название баннера и список персонажей проходят свои проверки и умещаются в пределы. */
 export function bannerFits(title: string, featured: string[]): boolean {
   return bannerTitleOk(title) && featuredListOk(featured);
 }
 
 const isInt = (value: unknown) => Number.isInteger(value);
-const httpsOrNull = (value: unknown) => value === null || (typeof value === "string" && value.startsWith("https://"));
+const urlOrNull = (value: unknown) => value === null || isPublicHttpsUrl(value);
 const text = (value: unknown, min: number, max: number) => typeof value === "string" && value.length >= min && value.length <= max;
 
 export function validateHub(hub: HubData, maxBytes = MAX_FILE_BYTES): string[] {
@@ -73,13 +115,13 @@ export function validateHub(hub: HubData, maxBytes = MAX_FILE_BYTES): string[] {
     if (!(GAME_IDS as readonly string[]).includes(g.id) || gameIds.has(g.id)) fail(`games[${i}].id: неизвестная или повторная игра ${g.id}`);
     gameIds.add(g.id);
     if (!text(g.title, 1, 100)) fail(`games[${i}].title: 1–100 знаков`);
-    if (!(g.redeemUrl === undefined || (typeof g.redeemUrl === "string" && g.redeemUrl.startsWith("https://") && g.redeemUrl.includes("{code}")))) {
-      fail(`games[${i}].redeemUrl: https с {code}`);
+    if (!(g.redeemUrl === undefined || (isPublicHttpsUrl(g.redeemUrl) && g.redeemUrl.includes("{code}")))) {
+      fail(`games[${i}].redeemUrl: обычный https-адрес с {code}`);
     }
     if (g.background !== undefined) {
-      if (!(typeof g.background.image === "string" && IMAGE_FILE.test(g.background.image))) fail(`games[${i}].background.image: https-картинка webp, png или jpg`);
-      if (!(g.background.video === undefined || (typeof g.background.video === "string" && VIDEO_FILE.test(g.background.video)))) {
-        fail(`games[${i}].background.video: https-видео webm или mp4`);
+      if (!isImageUrl(g.background.image)) fail(`games[${i}].background.image: обычный https-адрес картинки webp, png или jpg`);
+      if (!(g.background.video === undefined || isVideoUrl(g.background.video))) {
+        fail(`games[${i}].background.video: обычный https-адрес видео webm или mp4`);
       }
     }
   });
@@ -92,7 +134,7 @@ export function validateHub(hub: HubData, maxBytes = MAX_FILE_BYTES): string[] {
     if (!text(c.rewards, 0, REWARDS_MAX)) fail(`${at}.rewards: до 300 знаков`);
     if (c.expiresAt !== null && !isInt(c.expiresAt)) fail(`${at}.expiresAt: целое или null`);
     if (!text(c.region, 1, 16)) fail(`${at}.region: 1–16 знаков`);
-    if (!httpsOrNull(c.source)) fail(`${at}.source: https или null`);
+    if (!urlOrNull(c.source)) fail(`${at}.source: обычный https-адрес или null`);
   });
 
   hub.banners.forEach((b, i) => {
@@ -103,8 +145,8 @@ export function validateHub(hub: HubData, maxBytes = MAX_FILE_BYTES): string[] {
       fail(`${at}.featured: до 10 имён по 80 знаков`);
     }
     if (b.rarity !== null && !(isInt(b.rarity) && b.rarity >= 1 && b.rarity <= 6)) fail(`${at}.rarity: 1–6 или null`);
-    if (!httpsOrNull(b.image)) fail(`${at}.image: https или null`);
-    if (!httpsOrNull(b.url)) fail(`${at}.url: https или null`);
+    if (!urlOrNull(b.image)) fail(`${at}.image: обычный https-адрес или null`);
+    if (!urlOrNull(b.url)) fail(`${at}.url: обычный https-адрес или null`);
     if (!isInt(b.startsAt)) fail(`${at}.startsAt: целое`);
     if (!isInt(b.endsAt) || b.endsAt <= b.startsAt) fail(`${at}.endsAt: целое и позже начала`);
   });
@@ -115,8 +157,8 @@ export function validateHub(hub: HubData, maxBytes = MAX_FILE_BYTES): string[] {
     if (!knownGame(v.gameId)) fail(`${at}.gameId: игры ${v.gameId} нет в файле`);
     if (!VIDEO_LANGS.includes(v.lang)) fail(`${at}.lang: en или ja`);
     if (!(typeof v.title === "string" && videoTitleOk(v.title))) fail(`${at}.title: до 300 знаков`);
-    if (!(typeof v.url === "string" && v.url.startsWith("https://www.youtube.com/"))) fail(`${at}.url: только https://www.youtube.com/`);
-    if (!httpsOrNull(v.thumb)) fail(`${at}.thumb: https или null`);
+    if (!youtubeUrlOk(v.url)) fail(`${at}.url: только обычный адрес https://www.youtube.com/`);
+    if (!urlOrNull(v.thumb)) fail(`${at}.thumb: обычный https-адрес или null`);
     if (!isInt(v.publishedAt)) fail(`${at}.publishedAt: целое`);
     const key = `${v.gameId}:${v.lang}`;
     perGameLang.set(key, (perGameLang.get(key) ?? 0) + 1);
@@ -127,7 +169,7 @@ export function validateHub(hub: HubData, maxBytes = MAX_FILE_BYTES): string[] {
 
   if (hub.app !== undefined) {
     if (!(typeof hub.app.version === "string" && VERSION.test(hub.app.version))) fail("app.version: три числа через точку");
-    if (!(typeof hub.app.url === "string" && hub.app.url.startsWith("https://"))) fail("app.url: https");
+    if (!appUrlOk(hub.app.url)) fail(`app.url: только страница релизов ${APP_URL_PREFIX}`);
   }
 
   const bytes = Buffer.byteLength(JSON.stringify(hub), "utf8");

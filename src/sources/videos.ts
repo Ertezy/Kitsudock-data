@@ -3,7 +3,7 @@
 // канал — @ArknightsEndfieldEN: лента основного @ArknightsEndfield пуста.
 
 import type { GameId, Video, VideoLang } from "../types.ts";
-import { videoTitleOk } from "../validate.ts";
+import { isPublicHttpsUrl, videoTitleOk, youtubeUrlOk } from "../validate.ts";
 
 export const CHANNELS: Record<VideoLang, Record<GameId, string>> = {
   en: {
@@ -67,7 +67,7 @@ export function parseYoutubeFeed(
     const publishedAt = Date.parse(pick(block, /<published>([^<]+)<\/published>/) ?? "") / 1000;
     const thumb = pick(block, /<media:thumbnail url="([^"]+)"/);
     // Название длиннее предела — не ролик, а выброшенная запись: проверка файла не должна падать из-за одного заголовка.
-    if (channel !== channelId || !url?.startsWith("https://www.youtube.com/") || title === undefined || !videoTitleOk(title) || !Number.isFinite(publishedAt)) {
+    if (channel !== channelId || !youtubeUrlOk(url) || title === undefined || !videoTitleOk(title) || !Number.isFinite(publishedAt)) {
       dropped++;
       continue;
     }
@@ -76,7 +76,7 @@ export function parseYoutubeFeed(
       lang,
       title,
       url,
-      thumb: thumb?.startsWith("https://") ? thumb : null,
+      thumb: isPublicHttpsUrl(thumb) ? thumb : null,
       publishedAt: Math.floor(publishedAt),
       duration: null,
       premiere: false,

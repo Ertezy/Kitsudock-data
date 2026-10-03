@@ -5,6 +5,7 @@
 
 import type { Http } from "../http.ts";
 import type { GameBackground, GameId, HubData } from "../types.ts";
+import { isPublicHttpsUrl } from "../validate.ts";
 import type { SourceMemory } from "./registry.ts";
 
 export const HOYOPLAY_URL =
@@ -15,8 +16,15 @@ export const LAUNCHER_ART = { id: "hoyoplay-art", label: "фоны официа�
 /** Игры HoYoPlay по их коду в лаунчере. */
 const BIZ: Record<string, GameId> = { hk4e_global: "genshin", hkrpg_global: "hsr", nap_global: "zzz" };
 
-export const IMAGE_FILE = /^https:\/\/[^?#\s]+\.(?:webp|png|jpe?g)$/i;
-export const VIDEO_FILE = /^https:\/\/[^?#\s]+\.(?:webm|mp4)$/i;
+const IMAGE_FILE = /^https:\/\/[^?#\s]+\.(?:webp|png|jpe?g)$/i;
+const VIDEO_FILE = /^https:\/\/[^?#\s]+\.(?:webm|mp4)$/i;
+
+// Одной формы мало: «https://логин@хост:порт/a.webp» её проходит. Поэтому сначала общая
+// проверка адреса (валидация файла делает то же), и только потом расширение.
+/** Простой публичный https-адрес картинки webp, png или jpg. */
+export const isImageUrl = (value: unknown): value is string => isPublicHttpsUrl(value) && IMAGE_FILE.test(value);
+/** Простой публичный https-адрес видео webm или mp4. */
+export const isVideoUrl = (value: unknown): value is string => isPublicHttpsUrl(value) && VIDEO_FILE.test(value);
 
 const urlOf = (value: unknown): string | null => {
   const url = typeof value === "object" && value !== null ? (value as { url?: unknown }).url : undefined;
@@ -42,9 +50,9 @@ export function parseHoyoplayArt(json: unknown): Partial<Record<GameId, GameBack
     if (!Array.isArray(backgrounds) || backgrounds.length === 0) continue;
     const first = backgrounds[0] as { type?: unknown; background?: unknown; video?: unknown } | null;
     const image = urlOf(first?.background);
-    if (image === null || !IMAGE_FILE.test(image)) continue;
+    if (!isImageUrl(image)) continue;
     const video = first?.type === "BACKGROUND_TYPE_VIDEO" ? urlOf(first.video) : null;
-    result[BIZ[biz]!] = video !== null && VIDEO_FILE.test(video) ? { image, video } : { image };
+    result[BIZ[biz]!] = isVideoUrl(video) ? { image, video } : { image };
   }
   return result;
 }

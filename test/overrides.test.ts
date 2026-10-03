@@ -144,3 +144,31 @@ test("правки: название баннера, код и награда п
   assert.equal(parseOverrides({ codes: [{ game: "hsr", code: "ABC" }] }).ok, false);
   assert.equal(parseOverrides({ codes: [{ game: "hsr", code: "a1".repeat(20) + "z" }] }).ok, false);
 });
+
+test("правки: image и url — только обычные https-адреса, как в проверке файла", () => {
+  const banner = (extra: Record<string, unknown>) => ({ game: "wuthering", title: "T", starts: "2026-09-10 10:00 UTC+1", ends: "2026-09-29 11:59 UTC+1", ...extra });
+  const good = [
+    "https://static.wikia.nocookie.net/example-wiki/images/a/ab/Example.png/revision/latest/scale-to-width-down/400?cb=20260101000000",
+    "https://wutheringwaves.fandom.com/wiki/Example_Banner/2026-01-01",
+  ];
+  for (const url of good) {
+    assert.equal(parseOverrides({ banners: [banner({ image: url })] }).ok, true, url);
+    assert.equal(parseOverrides({ banners: [banner({ url })] }).ok, true, url);
+  }
+  const bad = [
+    "http://cdn.example.test/a.png",
+    "https://u:p@cdn.example.test/a.png",
+    "https://cdn.example.test:8443/a.png",
+    "https://192.168.1.1/a.png",
+    "https://[::1]/a.png",
+    "https://cdn.example.test/a b.png",
+    `https://cdn.example.test/${"a".repeat(2100)}`,
+  ];
+  for (const url of bad) {
+    for (const field of ["image", "url"]) {
+      const r = parseOverrides({ banners: [banner({ [field]: url })] });
+      assert.equal(r.ok, false, `${field}: ${url.slice(0, 60)}`);
+      if (!r.ok) assert.match(r.errors[0]!, /^banners\[0\]: image и url/);
+    }
+  }
+});

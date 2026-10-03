@@ -1,6 +1,7 @@
 // Обёртки над API MediaWiki: фандом и wiki.gg отвечают одинаково.
 
 import type { Http } from "./http.ts";
+import { isPublicHttpsUrl } from "./validate.ts";
 
 export interface Wiki {
   api: string;
@@ -95,7 +96,7 @@ export async function thumbnails(http: Http, wiki: Wiki, files: string[], width 
     })) as { query?: { pages?: { title: string; missing?: boolean; imageinfo?: { thumburl?: string }[] }[] } };
     for (const page of json.query?.pages ?? []) {
       const thumb = page.imageinfo?.[0]?.thumburl;
-      if (!page.missing && thumb?.startsWith("https://")) result.set(page.title.replace(/^File:/, ""), thumb);
+      if (!page.missing && isPublicHttpsUrl(thumb)) result.set(page.title.replace(/^File:/, ""), thumb);
     }
   }
   return result;

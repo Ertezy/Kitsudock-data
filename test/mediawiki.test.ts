@@ -112,3 +112,22 @@ test("раскрытие шаблонов", async () => {
   const f = fakeHttp({ expandtemplates: { expandtemplates: { wikitext: "<table></table>" } } });
   assert.equal(await expandTemplates(f.http, WUWA, "{{Banner table|current}}"), "<table></table>");
 });
+
+test("миниатюры: адрес с логином, портом, IP-адресом или не по https в карту не попадает", async () => {
+  const page = (name: string, thumburl: string) => ({ title: `File:${name}`, imageinfo: [{ thumburl }] });
+  const f = fakeHttp({
+    imageinfo: {
+      query: {
+        pages: [
+          page("Good.png", "https://static.wikia.nocookie.net/w/images/a/ab/Good.png/revision/latest/scale-to-width-down/400?cb=20260101000000"),
+          page("Login.png", "https://u:p@static.wikia.nocookie.net/w/Login.png"),
+          page("Port.png", "https://static.wikia.nocookie.net:8443/w/Port.png"),
+          page("Ip.png", "https://192.168.1.1/w/Ip.png"),
+          page("Plain.png", "http://static.wikia.nocookie.net/w/Plain.png"),
+        ],
+      },
+    },
+  });
+  const thumbs = await thumbnails(f.http, WUWA, ["Good.png", "Login.png", "Port.png", "Ip.png", "Plain.png"]);
+  assert.deepEqual([...thumbs.keys()], ["Good.png"]);
+});

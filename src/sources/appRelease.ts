@@ -6,6 +6,7 @@
 
 import { StatusError, type Http } from "../http.ts";
 import type { AppRelease } from "../types.ts";
+import { appUrlOk } from "../validate.ts";
 import type { SourceMemory } from "./registry.ts";
 
 export const APP_RELEASE_URL = "https://api.github.com/repos/Ertezy/Kitsudock/releases/latest";
@@ -20,7 +21,8 @@ export function parseAppRelease(json: unknown): AppRelease | null {
   if (typeof json !== "object" || json === null || Array.isArray(json)) return null;
   const { tag_name: tag, html_url: url, draft, prerelease } = json as Record<string, unknown>;
   if (draft === true || prerelease === true) return null;
-  if (typeof tag !== "string" || typeof url !== "string" || !url.startsWith("https://")) return null;
+  // Страница релиза — только релизы Kitsudock на GitHub, как требует и validateHub.
+  if (typeof tag !== "string" || !appUrlOk(url)) return null;
   const version = tag.replace(/^v/, "");
   return VERSION.test(version) ? { version, url } : null;
 }

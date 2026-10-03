@@ -107,3 +107,27 @@ ${entry("shortshort1", "2026-09-13T09:00:33+00:00", "Short")}
   };
   assert.deepEqual(validateHub(hub), []);
 });
+
+test("ссылка на ролик с чужого адреса, слишком длинная или с пробелом выбрасывает ролик", () => {
+  const withLink = (id: string, link: string) => entry(id, "2026-09-15T09:00:33+00:00", "T").replace(`https://www.youtube.com/watch?v=${id}`, link);
+  const feed = `<feed>${[
+    withLink("aaaaaaaaaaa", "https://www.youtube.com/watch?v=aaaaaaaaaaa"),
+    withLink("bbbbbbbbbbb", "https://example.org/watch?v=bbbbbbbbbbb"),
+    withLink("ccccccccccc", `https://www.youtube.com/watch?v=${"c".repeat(2100)}`),
+    withLink("ddddddddddd", "https://www.youtube.com/watch?v=d d"),
+  ].join("")}</feed>`;
+  const r = parseYoutubeFeed(feed, "endfield", CHANNELS.en.endfield, "en");
+  assert.equal(r.parsed, 4);
+  assert.equal(r.dropped, 3);
+  assert.deepEqual(r.videos.map((v) => v.url), ["https://www.youtube.com/watch?v=aaaaaaaaaaa"]);
+});
+
+test("миниатюра с логином, портом, IP-адресом или не по https пропадает, ролик остаётся", () => {
+  const withThumb = (id: string, thumb: string) => entry(id, "2026-09-15T09:00:33+00:00", `T${id}`).replace(`https://i1.ytimg.com/vi/${id}/hqdefault.jpg`, thumb);
+  const thumbs = ["https://u:p@i1.ytimg.com/vi/x/hqdefault.jpg", "https://i1.ytimg.com:8443/vi/x/hqdefault.jpg", "https://192.168.1.1/x.jpg", "https://[::1]/x.jpg", "http://i1.ytimg.com/vi/x/hqdefault.jpg"];
+  const feed = `<feed>${thumbs.map((thumb, i) => withThumb(`vid${i}`, thumb)).join("")}${withThumb("good", "https://i3.ytimg.com/vi/good/hqdefault.jpg")}</feed>`;
+  const r = parseYoutubeFeed(feed, "endfield", CHANNELS.en.endfield, "en");
+  assert.equal(r.dropped, 0);
+  assert.equal(r.videos.length, 6);
+  assert.deepEqual(r.videos.map((v) => v.thumb), [null, null, null, null, null, "https://i3.ytimg.com/vi/good/hqdefault.jpg"]);
+});

@@ -80,3 +80,17 @@ test("сбой или ответ не той формы — ошибка, про
   assert.deepEqual(odd, { ok: false, error: "ответ GitHub не той формы" });
   assert.deepEqual(memory.appRelease, { version: "0.1.1", url: RELEASE.html_url });
 });
+
+test("страница релиза — только релизы Kitsudock на GitHub, без логина, порта и IP", () => {
+  for (const url of [
+    "https://github.com/someone-else/Kitsudock/releases/tag/v0.1.1",
+    "https://github.com/Ertezy/Other/releases/tag/v0.1.1",
+    "https://example.org/Ertezy/Kitsudock/releases/tag/v0.1.1",
+    "https://github.com@example.org/Ertezy/Kitsudock/releases/tag/v0.1.1",
+    "https://github.com:8443/Ertezy/Kitsudock/releases/tag/v0.1.1",
+    "https://192.168.1.1/Ertezy/Kitsudock/releases/tag/v0.1.1",
+    `https://github.com/Ertezy/Kitsudock/releases/tag/${"a".repeat(2100)}`,
+  ]) {
+    assert.equal(parseAppRelease({ ...RELEASE, html_url: url }), null, url.slice(0, 80));
+  }
+});

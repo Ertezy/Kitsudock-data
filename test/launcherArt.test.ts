@@ -107,3 +107,21 @@ test("фоны ставятся играм файла; без фонов — т�
   assert.equal(hub.games[0]!.background, undefined, "исходные данные не меняются");
   assert.equal(withLauncherArt(hub, {}), hub);
 });
+
+test("фон: картинка и видео с логином, портом или IP-адресом не годятся", () => {
+  const unspecified = (url: string) => ({ type: "BACKGROUND_TYPE_UNSPECIFIED", background: { url } });
+  const withVideo = (videoUrl: string) => ({ type: "BACKGROUND_TYPE_VIDEO", background: { url: IMG("z") }, video: { url: videoUrl } });
+  for (const url of ["https://u:p@cdn.example.test/bg/a.webp", "https://cdn.example.test:8443/bg/a.webp", "https://192.168.1.1/bg/a.webp", "https://[::1]/bg/a.webp", "https://2130706433/bg/a.webp"]) {
+    assert.deepEqual(parseHoyoplayArt(reply([entry("hk4e_global", [unspecified(url)])])), {}, `картинка ${url}`);
+  }
+  for (const url of ["https://u:p@cdn.example.test/bg/a.webm", "https://cdn.example.test:8443/bg/a.mp4", "https://192.168.1.1/bg/a.webm", "https://[::1]/bg/a.mp4"]) {
+    assert.deepEqual(parseHoyoplayArt(reply([entry("nap_global", [withVideo(url)])])), { zzz: { image: IMG("z") } }, `видео ${url}`);
+  }
+});
+
+test("фон: настоящие виды адресов HoYoPlay проходят", () => {
+  const image = "https://launcher-webstatic.hoyoverse.com/launcher-public/2026/01/01/0123456789abcdef0123456789abcdef_1234567890123456789.webp";
+  const video = "https://fastcdn.hoyoverse.com/static-resource-v2/2026/01/01/0123456789abcdef0123456789abcdef_1234567890123456789.mp4";
+  const art = parseHoyoplayArt(reply([entry("hk4e_global", [{ type: "BACKGROUND_TYPE_VIDEO", background: { url: image }, video: { url: video } }])]));
+  assert.deepEqual(art, { genshin: { image, video } });
+});
