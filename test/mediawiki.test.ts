@@ -131,3 +131,22 @@ test("миниатюры: адрес с логином, портом, IP-адр�
   const thumbs = await thumbnails(f.http, WUWA, ["Good.png", "Login.png", "Port.png", "Ip.png", "Plain.png"]);
   assert.deepEqual([...thumbs.keys()], ["Good.png"]);
 });
+
+test("ошибка API: код в сообщении обрезан до 100 знаков, а не строка заменена словом «ошибка»", async () => {
+  const long = "x".repeat(1000);
+  await assert.rejects(
+    pageWikitext(fakeHttp({ wikitext: { error: { code: long } } }).http, WUWA, "X"),
+    (error: Error) => {
+      assert.equal(error.message, `MediaWiki: ${"x".repeat(100)}`);
+      return true;
+    },
+  );
+  await assert.rejects(
+    pageWikitext(fakeHttp({ wikitext: { error: { code: { nested: long } } } }).http, WUWA, "X"),
+    (error: Error) => {
+      assert.equal(error.message, "MediaWiki: ошибка");
+      return true;
+    },
+  );
+  await assert.rejects(pageWikitext(fakeHttp({ wikitext: { error: {} } }).http, WUWA, "X"), /^Error: MediaWiki: ошибка$/);
+});

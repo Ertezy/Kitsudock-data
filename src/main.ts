@@ -2,7 +2,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHttp, StatusError } from "./http.ts";
-import { applyIssueActions, createGitHub, planIssues } from "./issues.ts";
+import { applyIssueActions, cleanErrorText, createGitHub, planIssues } from "./issues.ts";
 import { mergeHub, sameData, sectionKey } from "./merge.ts";
 import { applyOverrides, bannerStarts, parseOverrides, type Overrides } from "./overrides.ts";
 import { APP_RELEASE, fetchAppRelease } from "./sources/appRelease.ts";
@@ -22,6 +22,7 @@ import {
   missingPrevious,
   pruneState,
   recordRun,
+  runStatus,
   saveState,
 } from "./state.ts";
 import type { HubData, HubGame, Item, SourceRun } from "./types.ts";
@@ -52,10 +53,11 @@ try {
     // файла ещё нет — это не сбой, а ожидаемое состояние для нового репозитория
   } else if (state.base === null) {
     // прошлых данных нет нигде, а проверка живого файла провалилась не из-за 404 —
-    // неожиданный сбой; пусть процесс упадёт, и GitHub сам напишет владельцу письмом
-    throw error;
+    // неожиданный сбой; пусть процесс упадёт, и GitHub сам напишет владельцу письмом.
+    // Текст ошибки идёт в журнал запуска, поэтому перед этим его чистят (см. cleanErrorText).
+    throw new Error(`не удалось проверить файл на Pages: ${cleanErrorText((error as Error).message)}`);
   } else {
-    liveCheckFailed = (error as Error).message;
+    liveCheckFailed = cleanErrorText((error as Error).message);
   }
 }
 
@@ -101,7 +103,7 @@ await Promise.all(
     lastRun[source.id] = now;
     recordRun(state.failures, source.id, run, now);
     runs.set(key, run);
-    console.log(`${source.id}: ${run.kind === "broken" ? `сломан — ${run.error}` : run.kind}`);
+    console.log(`${source.id}: ${runStatus(run)}`);
   }),
 );
 
@@ -118,7 +120,7 @@ await Promise.all(
     const run = await source.run(ctx);
     recordRun(state.failures, source.id, run, now);
     if (run.kind === "ok") runs.set(key, run);
-    console.log(`${source.id} (запасной): ${run.kind === "broken" ? `сломан — ${run.error}` : run.kind}`);
+    console.log(`${source.id} (запасной): ${runStatus(run)}`);
   }),
 );
 
@@ -128,7 +130,7 @@ if (isDue(lastRun[KURO_SIGNAL.id], KURO_SIGNAL.everyHours, now)) {
   if (result.ok) {
     delete state.failures[KURO_SIGNAL.id];
     // Сбой одной статьи не роняет прогон: факты остаются прошлые, статья перечитается в следующий раз.
-    for (const warning of result.warnings) console.log(`${KURO_SIGNAL.id}: ${warning}`);
+    for (const warning of result.warnings) console.log(`${KURO_SIGNAL.id}: ${cleanErrorText(warning)}`);
   } else {
     recordRun(state.failures, KURO_SIGNAL.id, { kind: "broken", error: result.error }, now);
   }
@@ -166,13 +168,13 @@ try {
   if (parsed.ok) overrides = parsed.overrides;
   else overridesErrors = parsed.errors;
 } catch (error) {
-  overridesErrors = [`не читается как JSON: ${(error as Error).message}`];
+  overridesErrors = [`не читается как JSON: ${cleanErrorText((error as Error).message)}`];
 }
 
 // Баннерам без картинки — арт прошлого запуска с фандома (sources/art.ts). После правок:
 // вписанный вручную баннер без картинки тоже его получает. Сбой вики прогон не роняет.
 const withOverrides = applyOverrides(withKuro, overrides, now);
-for (const warning of await refreshArt(http, withOverrides.banners, memory.bannerArt, now)) console.log(`арт баннеров: ${warning}`);
+for (const warning of await refreshArt(http, withOverrides.banners, memory.bannerArt, now)) console.log(`арт баннеров: ${cleanErrorText(warning)}`);
 const withBannerArt = withArt(withOverrides, memory.bannerArt);
 // Версия приложения — из памяти, как баннеры Kuro; в state.base не попадает.
 const withRelease: HubData = memory.appRelease ? { ...withBannerArt, app: memory.appRelease } : withBannerArt;
@@ -240,7 +242,7 @@ if (!dryRun && process.env.GITHUB_TOKEN) {
   } catch (error) {
     // Задачи живут на GitHub, а не локально: следующий прогон сам сверится заново.
     // Но владелец должен узнать о сбое — процесс завершится с ошибкой.
-    report.push(`задачи в GitHub не обновились: ${(error as Error).message}`);
+    report.push(`задачи в GitHub не обновились: ${cleanErrorText((error as Error).message)}`);
     process.exitCode = 1;
   }
 } else {
@@ -261,8 +263,8 @@ if (!dryRun && process.env.GITHUB_TOKEN) {
 
 report.push(
   `коды ${hub.codes.length}, баннеры ${hub.banners.length}, видео ${hub.videos.length}`,
-  `проверка: ${validationErrors.length === 0 ? "пройдена" : validationErrors.join(" | ")}`,
-  `правки: ${overridesErrors.length === 0 ? "в порядке" : overridesErrors.join(" | ")}`,
+  `проверка: ${validationErrors.length === 0 ? "пройдена" : validationErrors.map((e) => cleanErrorText(e)).join(" | ")}`,
+  `правки: ${overridesErrors.length === 0 ? "в порядке" : overridesErrors.map((e) => cleanErrorText(e)).join(" | ")}`,
   `выкладка: ${publish ? "да" : "нет"}${dryRun ? " (пробный запуск, файл в public/hub.json)" : ""}`,
 );
 console.log(report.join("\n"));

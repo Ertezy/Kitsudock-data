@@ -46,6 +46,28 @@ export function formatTime(unix: number): string {
   return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${hh}:${mm} UTC`;
 }
 
+/** Самый длинный текст ошибки в журнале и в теле задачи. */
+export const ERROR_TEXT_MAX = 200;
+
+/**
+ * Текст ошибки из чужого ответа (сообщение разбора JSON цитирует кусок ответа, код ошибки вики
+ * приходит как есть) годится в журнал и в задачу только после чистки: одна строка, нулевой пробел
+ * после каждой «@» (иначе GitHub упомянет постороннего человека), «::» в начале обезврежено
+ * (строка журнала запуска с него читается как команда Actions), длина не больше ERROR_TEXT_MAX.
+ * Повторная чистка текст не меняет.
+ */
+export function cleanErrorText(text: unknown): string {
+  let line = String(text)
+    .toWellFormed()
+    .replace(/[\s\p{Cc}]+/gu, " ")
+    .trim()
+    .replace(/@(?!\u200B)/g, "@\u200B");
+  if (line.startsWith("::")) line = `:\u200B${line.slice(1)}`;
+  // Одинокие половины суррогатных пар заменены выше, а обрезка не оставляет половину пары и пробел на конце:
+  // так итог — правильная строка, и повторная чистка его не меняет.
+  return line.slice(0, ERROR_TEXT_MAX).replace(/[\uD800-\uDBFF]$/, "").trimEnd();
+}
+
 export const withKey = (key: string, text: string) => `${text}\n\n<!-- collector-key: ${key} -->`;
 
 export function keyOf(body: string): string | null {
@@ -74,7 +96,8 @@ export function planIssues(input: IssueInputs): IssueAction[] {
     const text = f
       ? [
           `Источник: ${label}`,
-          `Что сломалось: ${f.lastError}`,
+          // Состояние живёт в кеше между запусками: в нём мог остаться текст, записанный до чистки.
+          `Что сломалось: ${cleanErrorText(f.lastError)}`,
           `Не работает с: ${formatTime(f.since)}`,
           `Последняя попытка: ${formatTime(f.lastAttempt)}`,
           `Запуск: ${input.runUrl}`,
@@ -93,7 +116,7 @@ export function planIssues(input: IssueInputs): IssueAction[] {
     }
   }
 
-  const list = (errors: string[]) => errors.map((e) => `- ${e}`).join("\n");
+  const list = (errors: string[]) => errors.map((e) => `- ${cleanErrorText(e)}`).join("\n");
   keep(
     "validation",
     input.validationErrors.length > 0,

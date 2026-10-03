@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { baseFromPublished, emptyState, isDue, loadState, missingPrevious, pruneState, recordRun, saveState } from "../src/state.ts";
+import { baseFromPublished, emptyState, isDue, loadState, missingPrevious, pruneState, recordRun, runStatus, saveState } from "../src/state.ts";
 import type { Failure } from "../src/issues.ts";
 import { KURO_MENU_URL, kuroArticleUrl } from "../src/sources/kuro.ts";
 import { KURO_SIGNAL } from "../src/sources/registry.ts";
@@ -317,4 +317,23 @@ test("из выложенного файла в основу не попадае
     app: { version: "0.1.1", url: "https://github.com/Ertezy/Kitsudock/releases/tag/v0.1.1" },
   };
   assert.equal("app" in baseFromPublished(hub), false);
+});
+
+test("счётчик неудач: в lastError попадает одна короткая строка без «@» и «::» в начале", () => {
+  const failures: Record<string, Failure> = {};
+  recordRun(failures, "a", { kind: "broken", error: `::error::p\n@victim ${"x".repeat(1000)}` }, NOW);
+  const lastError = failures.a!.lastError;
+  assert.equal(lastError.length, 200);
+  assert.doesNotMatch(lastError, /[\r\n]/);
+  assert.doesNotMatch(lastError, /^\s*::/);
+  assert.match(lastError, /@\u200Bvictim/);
+  assert.equal(failures.a!.consecutive, 1);
+});
+
+test("строка о запуске в журнале: у поломки текст ошибки чистится, у остальных — только вид", () => {
+  assert.equal(runStatus({ kind: "broken", error: "a\n::error::b @c" }), "сломан — a ::error::b @\u200Bc");
+  assert.equal(runStatus({ kind: "broken", error: "x".repeat(1000) }).length, "сломан — ".length + 200);
+  assert.equal(runStatus({ kind: "unchanged" }), "unchanged");
+  assert.equal(runStatus({ kind: "skipped" }), "skipped");
+  assert.equal(runStatus({ kind: "ok", items: [], parsed: 0, dropped: 0 }), "ok");
 });

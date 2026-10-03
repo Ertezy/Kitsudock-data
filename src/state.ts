@@ -3,7 +3,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Failure } from "./issues.ts";
+import { cleanErrorText, type Failure } from "./issues.ts";
 import { KURO_MENU_URL, isKuroUrl } from "./sources/kuro.ts";
 import { KURO_SIGNAL, emptyMemory, type SourceMemory } from "./sources/registry.ts";
 import type { HubData, Item, SourceRun } from "./types.ts";
@@ -125,10 +125,13 @@ export function recordRun(failures: Record<string, Failure>, sourceId: string, r
   failures[sourceId] = {
     consecutive: (previous?.consecutive ?? 0) + 1,
     since: previous?.since ?? now,
-    lastError: run.error,
+    lastError: cleanErrorText(run.error),
     lastAttempt: now,
   };
 }
+
+/** Строка о запуске источника для журнала: у поломки — с чистым текстом ошибки, у остальных — просто вид. */
+export const runStatus = (run: SourceRun<Item>): string => (run.kind === "broken" ? `сломан — ${cleanErrorText(run.error)}` : run.kind);
 
 /** Убирает записи об источниках, которых больше нет (спека этапа 6 §3.1).
  *  Иначе старая неудача держала бы задачу о поломке открытой вечно: удалить

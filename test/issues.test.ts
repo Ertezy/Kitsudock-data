@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createGitHub, formatTime, keyOf, planIssues, withKey, type IssueInputs } from "../src/issues.ts";
+import { cleanErrorText, createGitHub, formatTime, keyOf, planIssues, withKey, type IssueInputs } from "../src/issues.ts";
 
 const utc = (y: number, mo: number, d: number, h: number, mi: number) => Date.UTC(y, mo - 1, d, h, mi) / 1000;
 const NOW = utc(2026, 9, 16, 14, 17);
@@ -138,4 +138,103 @@ test("клиент GitHub: список, открытие, закрытие", as
   await gh.close(7, "Заработал.");
   assert.deepEqual(calls.slice(-2).map((c) => c.method), ["POST", "PATCH"]);
   assert.equal(await gh.lastHumanCommitAt(), Date.UTC(2026, 8, 1, 10, 0) / 1000);
+});
+
+const ZWSP = "\u200B";
+
+test("текст ошибки: одна строка, нулевой пробел после «@», «::» не в начале", () => {
+  const cleaned = cleanErrorText("x\n::error::p @victim");
+  assert.equal(cleaned, `x ::error::p @${ZWSP}victim`);
+  assert.doesNotMatch(cleaned, /[\r\n]/);
+  assert.equal(cleaned.startsWith("::"), false);
+});
+
+test("текст ошибки: пробельные и управляющие знаки любого вида сворачиваются в один пробел", () => {
+  assert.equal(cleanErrorText("a \t\r\n\u2028\u00A0 b\u001b[31m\u0085c"), "a b [31m c");
+  assert.equal(cleanErrorText("  \n tail \n "), "tail");
+  assert.equal(cleanErrorText(""), "");
+});
+
+test("текст ошибки: «::» в начале обезвреживается, сам текст остаётся", () => {
+  for (const raw of ["::error::boom", "\n\n  ::error::boom", ":::warning::x", "\t::set-output name=a::b", "::"]) {
+    const cleaned = cleanErrorText(raw);
+    assert.doesNotMatch(cleaned, /^\s*::/, JSON.stringify(raw));
+    assert.equal(cleaned.replaceAll(ZWSP, ""), raw.replace(/\s+/g, " ").trim(), "знаки на месте, добавлен только нулевой пробел");
+  }
+  assert.equal(cleanErrorText("a::b"), "a::b", "«::» не в начале не трогается");
+});
+
+test("текст ошибки: каждая «@» получает нулевой пробел за собой, один раз", () => {
+  assert.equal(cleanErrorText("@a @b@c"), `@${ZWSP}a @${ZWSP}b@${ZWSP}c`);
+  assert.equal(cleanErrorText(`@${ZWSP}a`), `@${ZWSP}a`, "уже обезвреженная не получает второй");
+});
+
+test("текст ошибки: длиннее 200 знаков обрезается ровно до 200", () => {
+  assert.equal(cleanErrorText("x".repeat(1000)).length, 200);
+  assert.equal(cleanErrorText("x".repeat(201)).length, 200);
+  assert.equal(cleanErrorText("x".repeat(200)), "x".repeat(200));
+  assert.equal(cleanErrorText("x".repeat(199)), "x".repeat(199));
+  // Нулевые пробелы, добавленные после «@», в предел входят: итог не длиннее 200 и при сплошных «@».
+  assert.equal(cleanErrorText("@".repeat(1000)).length, 200);
+});
+
+test("текст ошибки: обрезка не оставляет половину суррогатной пары и пробел на конце", () => {
+  const split = cleanErrorText("a".repeat(199) + "😀");
+  assert.equal(split, "a".repeat(199));
+  assert.equal(split, split.toWellFormed());
+  assert.equal(cleanErrorText("a".repeat(199) + " b"), "a".repeat(199));
+  // Одинокая половина пары в самом ответе заменяется знаком подстановки, а не доезжает до журнала.
+  const lone = String.fromCharCode(0xd83d);
+  assert.equal(cleanErrorText(`a${lone}b`), "a" + String.fromCharCode(0xfffd) + "b");
+  assert.equal(cleanErrorText(`x ${lone}${lone}`), "x " + String.fromCharCode(0xfffd, 0xfffd));
+});
+
+test("текст ошибки: повторная чистка ничего не меняет", () => {
+  for (const raw of ["x\n::error::p @victim", "a".repeat(199) + "@b", "@".repeat(300), "::x", "a".repeat(199) + "😀", "a".repeat(199) + " b", "  ::  @ "]) {
+    const once = cleanErrorText(raw);
+    assert.equal(cleanErrorText(once), once, JSON.stringify(raw));
+  }
+});
+
+test("текст ошибки: сообщение JSON.parse с кусочком чужого ответа тоже сводится к одной строке", () => {
+  let message = "";
+  try {
+    JSON.parse('{"a":\n::error::x @victim');
+  } catch (error) {
+    message = (error as Error).message;
+  }
+  const cleaned = cleanErrorText(message);
+  assert.doesNotMatch(cleaned, /[\r\n]/);
+  assert.doesNotMatch(cleaned, /^\s*::/);
+  assert.doesNotMatch(cleaned, /@(?!\u200B)/);
+});
+
+test("тело задачи: тексты ошибок чистятся, даже если в состоянии остался сырой текст", () => {
+  const raw = "ответ 503\n::error::p @victim " + "x".repeat(500);
+  const actions = planIssues(
+    base({
+      failures: { "wuthering-codes": { consecutive: 2, since: NOW - 7200, lastError: raw, lastAttempt: NOW } },
+      validationErrors: ["codes[0].code: плохо\n::error::p @victim", "x".repeat(500)],
+      overridesErrors: ["не читается как JSON: \n::error::p @victim"],
+    }),
+  );
+  assert.deepEqual(actions.map((a) => (a.type === "open" ? keyOf(a.body) : a.type)), ["source:wuthering-codes", "validation", "overrides"]);
+  for (const a of actions) {
+    if (a.type !== "open") continue;
+    assert.doesNotMatch(a.body, /@(?!\u200B)/, a.title);
+    assert.equal(
+      a.body.split("\n").some((line) => line.startsWith("::")),
+      false,
+      a.title,
+    );
+    assert.ok(a.body.split("\n").every((line) => line.length <= 300), `строки тела короткие: ${a.title}`);
+  }
+  const source = actions[0]!;
+  if (source.type !== "open") return;
+  const line = source.body.split("\n").find((l) => l.startsWith("Что сломалось: "))!;
+  assert.equal(line, `Что сломалось: ${cleanErrorText(raw)}`);
+  assert.equal(line.length, "Что сломалось: ".length + 200);
+  // Структура тела та же, что и была: одна строка на запись ошибки.
+  const validation = actions[1]!;
+  if (validation.type === "open") assert.equal(validation.body.split("\n").filter((l) => l.startsWith("- ")).length, 2);
 });

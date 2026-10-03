@@ -26,15 +26,22 @@ export function fandom(subdomain: string): Wiki {
 
 export const ENDFIELD_WIKI: Wiki = wikiAt("https://endfield.wiki.gg");
 
+/** Самый длинный код ошибки API в тексте исключения. */
+const ERROR_CODE_MAX = 100;
+
 interface MwError {
-  error?: { code?: string };
+  error?: { code?: unknown };
 }
 
 async function call(http: Http, wiki: Wiki, params: Record<string, string>): Promise<unknown> {
   const query = new URLSearchParams({ ...params, format: "json", formatversion: "2" });
   const res = await http.get(`${wiki.api}?${query}`);
   const json = JSON.parse(res.body) as MwError;
-  if (json.error) throw new Error(`MediaWiki: ${json.error.code ?? "ошибка"}`);
+  if (json.error) {
+    // Код приходит из чужого ответа как есть: в сообщение идёт только строка и не длиннее ERROR_CODE_MAX.
+    const code = typeof json.error.code === "string" ? json.error.code.slice(0, ERROR_CODE_MAX) : "ошибка";
+    throw new Error(`MediaWiki: ${code}`);
+  }
   return json;
 }
 
