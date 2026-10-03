@@ -7,6 +7,7 @@ import { GAME_IDS, type HubData, type HubGame, type Item, type SourceRun } from 
 import { bannerStarts, parseOverrides } from "../src/overrides.ts";
 import { KURO_MENU_URL, kuroArticleJsonUrl, kuroArticleUrl, kuroBanners, unreadableAnnouncement, type KuroBannerFact } from "../src/sources/kuro.ts";
 import { KURO_SIGNAL, SOURCES, emptyMemory, fetchKuroAnnouncements, kuroFactsFromMemory } from "../src/sources/registry.ts";
+import { MAX_BANNERS_PER_GAME, MAX_KURO_ARTICLES_PER_RUN } from "../src/validate.ts";
 
 type Route = (url: URL) => HttpResponse | undefined;
 
@@ -704,4 +705,118 @@ test("коды ennead.cc: 200 — норма, 201 — источник слом�
   const memory = emptyMemory();
   assert.equal((await source.run({ http: at(201), now: NOW, memory })).kind, "broken");
   assert.deepEqual(memory.validators, {}, "метки ответа не запомнены — запрос повторится безусловным");
+});
+
+// Число запросов за прогон не должно расти вместе с тем, что отдала страница.
+test("анонсы Kuro: из сотни свежих анонсов и патчноутов за прогон читается не больше 30 статей, самые новые", async () => {
+  assert.equal(MAX_KURO_ARTICLES_PER_RUN, 30);
+  const k = kuroSite();
+  // Время на сайте — UTC+8; метка только упорядочивает записи, главное — все они свежие и уже вышли.
+  const stamp = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+  const announcementIds = Array.from({ length: 100 }, (_, i) => 20_000 + i); // 20 000 — самый новый
+  const noteIds = Array.from({ length: 10 }, (_, i) => 30_000 + i); // патчноуты новее всех анонсов
+  const announcements = announcementIds.map((articleId, i) => ({
+    articleId,
+    articleTitle: "[Version 9.9 Featured Resonator/Weapon Convene: Phase I]",
+    startTime: stamp(Date.UTC(2026, 8, 15, 23, 59) - i * 60_000),
+  }));
+  const notes = noteIds.map((articleId, i) => ({
+    articleId,
+    articleTitle: `Patch Notes for Wuthering Waves Version 7.${i}: Synthetic Title`,
+    startTime: stamp(Date.UTC(2026, 8, 16, 4, 0) - i * 60_000),
+  }));
+  k.site.menu = [...announcements, ...notes].reverse(); // самые старые первыми: порядок меню не подсказка
+  for (const id of [...announcementIds, ...noteIds]) {
+    k.site.html[id] = announcementIds.includes(id) ? ANNOUNCEMENT_HTML : NOTES_HTML;
+    k.site.etags[id] = `"e${id}"`;
+  }
+  const memory = emptyMemory();
+  const result = await fetchKuroAnnouncements({ http: k.http, now: NOW, memory });
+  assert.equal(result.ok, true);
+  const fetched = k.site.seen.filter((r) => r.url.includes("/article/")).map((r) => Number(/(\d+)\.json$/.exec(r.url)![1]));
+  const readAnnouncements = announcementIds.slice(0, MAX_KURO_ARTICLES_PER_RUN - noteIds.length);
+  assert.equal(fetched.length, MAX_KURO_ARTICLES_PER_RUN, "статей запрошено не больше предела");
+  assert.deepEqual([...fetched].sort(), [...noteIds, ...readAnnouncements].sort(), "из всех — самые новые");
+  assert.deepEqual(Object.keys(memory.kuroFacts).map(Number).sort(), [...readAnnouncements].sort(), "факты есть только у прочитанных анонсов");
+  assert.equal(memory.kuro.length, 100, "остальные анонсы из меню не теряются — просто не прочитаны");
+});
+
+test("анонсы Kuro: до предела читаются все статьи, как и раньше", async () => {
+  const k = kuroSite();
+  const memory = emptyMemory();
+  await fetchKuroAnnouncements({ http: k.http, now: NOW, memory });
+  assert.equal(k.site.seen.filter((r) => r.url.includes("/article/")).length, 2, "анонс и патчноут");
+  assert.deepEqual(memory.kuroFacts, { "9001": [FACT] });
+});
+
+// Таблица Endfield: сколько бы строк ни отдала страница, баннеров не больше предела, а миниатюры — одним запросом.
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const efStamp = (ms: number) => {
+  const d = new Date(ms);
+  return `${MONTHS[d.getUTCMonth()]} ${String(d.getUTCDate()).padStart(2, "0")}, ${d.getUTCFullYear()}, 00:00`;
+};
+const efRow = (name: string, startMs: number, endMs: number) =>
+  `<tr valign="top"><td><div class="header">${name}</div><div>[[File:${name} banner.png|360px|link=]]</div><div><b><abbr title="Americas / Europe">AM / EU</abbr>:</b> <span>${efStamp(startMs)} &ndash; ${efStamp(endMs)} <span class="visually-hidden">(UTC+8)</span></span></div></td><td><div>'''Limited operators:''' <ul><li><span>[[File:${name} icon.png|24px|link=${name}]]</span> [[${name} op]] </li></ul></div></td></tr>`;
+const DAY_MS = 86_400_000;
+
+function endfieldWiki(table: string) {
+  return fakeHttp([
+    (u) => (u.searchParams.get("action") === "expandtemplates" ? json({ expandtemplates: { wikitext: table } }) : undefined),
+    (u) =>
+      u.searchParams.get("prop") === "imageinfo"
+        ? json({ query: { pages: u.searchParams.get("titles")!.split("|").map((title) => ({ title, imageinfo: [{ thumburl: `https://static.example.test/${encodeURIComponent(title)}` }] })) } })
+        : undefined,
+  ]);
+}
+const imageinfoCalls = (urls: string[]) => urls.filter((u) => u.includes("prop=imageinfo"));
+
+test("Endfield: 500 строк таблицы — не больше 50 баннеров, самые новые, и один запрос миниатюр", async () => {
+  assert.equal(MAX_BANNERS_PER_GAME, 50);
+  const first = Date.UTC(2030, 0, 1);
+  const live = Array.from({ length: 500 }, (_, i) => efRow(`Banner ${i}`, first + i * DAY_MS, first + (i + 10) * DAY_MS));
+  const expired = Array.from({ length: 10 }, (_, i) => efRow(`Old ${i}`, Date.UTC(2025, 0, 1) + i * DAY_MS, Date.UTC(2025, 0, 20) + i * DAY_MS));
+  const f = endfieldWiki(`<table>${[...expired, ...live].join("\n")}</table>`);
+  const run = await byId("endfield-banners").run({ http: f.http, now: NOW, memory: emptyMemory() });
+  assert.equal(run.kind, "ok");
+  if (run.kind !== "ok") return;
+  const titles = run.items.map((b) => (b as { title: string }).title);
+  assert.equal(titles.length, MAX_BANNERS_PER_GAME);
+  assert.deepEqual([...titles].sort(), Array.from({ length: 50 }, (_, i) => `Banner ${450 + i}`).sort(), "оставлены самые новые, закончившиеся не берутся");
+  assert.ok(run.items.every((b) => (b as { image: string | null }).image?.startsWith("https://static.example.test/")), "у всех оставленных есть миниатюра");
+  const calls = imageinfoCalls(f.urls);
+  assert.equal(calls.length, 1, "миниатюры — одним запросом");
+  const asked = new URL(calls[0]!).searchParams.get("titles")!.split("|");
+  assert.equal(asked.length, MAX_BANNERS_PER_GAME);
+  assert.ok(asked.every((name) => /^File:Banner \d+ banner\.png$/.test(name) && Number(/\d+/.exec(name)![0]) >= 450), "картинки только тех баннеров, что попадут в файл");
+});
+
+test("Endfield: все строки закончились — ни баннеров, ни запроса миниатюр", async () => {
+  const rows = Array.from({ length: 3 }, (_, i) => efRow(`Old ${i}`, Date.UTC(2025, 0, 1), Date.UTC(2025, 0, 20)));
+  const f = endfieldWiki(`<table>${rows.join("\n")}</table>`);
+  const run = await byId("endfield-banners").run({ http: f.http, now: NOW, memory: emptyMemory() });
+  assert.equal(run.kind, "ok");
+  if (run.kind === "ok") assert.deepEqual(run.items, []);
+  assert.equal(imageinfoCalls(f.urls).length, 0);
+});
+
+test("баннеры с фандома: закончившийся баннер не просит миниатюру, число страниц ограничено общим пределом", async () => {
+  const page = `{{Convene
+|image = Banner A 2026-08-20.jpg
+|type = Featured Resonator
+|time_start = 2026-08-20 10:00
+|time_end = 2026-09-10 09:59
+}}
+{{Convene/Pool
+|resonator_5_F = Hiyuki
+}}`;
+  const f = fakeHttp([
+    (u) => (u.searchParams.get("list") === "categorymembers" ? json({ query: { categorymembers: [{ title: "Banner A/2026-08-20" }] } }) : undefined),
+    (u) => (u.searchParams.get("prop") === "info" ? json({ query: { pages: [{ title: "Banner A/2026-08-20", lastrevid: 9 }] } }) : undefined),
+    (u) => (u.searchParams.get("action") === "parse" ? json({ parse: { wikitext: page } }) : undefined),
+  ]);
+  const run = await byId("wuthering-banners").run({ http: f.http, now: NOW, memory: emptyMemory() });
+  assert.equal(run.kind, "ok");
+  if (run.kind === "ok") assert.deepEqual(run.items, [], "баннер закончился 10 сентября — в файл не попадёт");
+  assert.equal(imageinfoCalls(f.urls).length, 0, "миниатюра для него не запрашивалась");
+  assert.ok(f.urls.some((u) => u.includes("list=categorymembers") && u.includes(`cmlimit=${MAX_BANNERS_PER_GAME}`)));
 });

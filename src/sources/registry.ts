@@ -1,9 +1,10 @@
 // Какие источники есть, как часто их спрашивать и как из ответа получить записи.
 
 import type { Http, Validators } from "../http.ts";
-import { judge } from "../items.ts";
+import { isLive, judge } from "../items.ts";
 import { ENDFIELD_WIKI, categoryMembers, expandTemplates, fandom, lastRevisions, pageWikitext, thumbnails, type Wiki } from "../mediawiki.ts";
 import { GAME_IDS, VIDEO_LANGS, type AppRelease, type Banner, type GameBackground, type GameId, type Item, type Section, type SourceRun, type VideoLang } from "../types.ts";
+import { MAX_BANNERS_PER_GAME, MAX_KURO_ARTICLES_PER_RUN } from "../validate.ts";
 import type { ArtMemory } from "./art.ts";
 import { BANNER_PAGES, parseBannerPage, parseEndfieldTable, parseEnneadBanners, recentBannerPages, type BannerDraft, type BannerPageSpec, type PageOutcome } from "./banners.ts";
 import { parseEnneadCodes, parseRowCodes, parseWuwaCodes } from "./codes.ts";
@@ -159,6 +160,18 @@ function ennead(game: "genshin" | "hsr" | "zzz", section: "codes" | "banners"): 
   };
 }
 
+/**
+ * Баннеры, что попадут в файл: идущие и будущие (закончившиеся mergeHub всё равно
+ * выбросит), самые новые первыми и не больше MAX_BANNERS_PER_GAME. Миниатюры
+ * просятся только для них: сколько бы строк ни отдала страница, это один запрос.
+ */
+function publishable(drafts: BannerDraft[], now: number): BannerDraft[] {
+  return drafts
+    .filter((d) => isLive("banners", d.banner, now))
+    .sort((a, b) => b.banner.startsAt - a.banner.startsAt)
+    .slice(0, MAX_BANNERS_PER_GAME);
+}
+
 async function withThumbnails(http: Http, wiki: Wiki, drafts: BannerDraft[]): Promise<Banner[]> {
   const files = drafts.flatMap((d) => (d.imageFile ? [d.imageFile] : []));
   let thumbs = new Map<string, string>();
@@ -183,7 +196,7 @@ function fandomBanners(spec: BannerPageSpec): SourceDef {
     run: ({ http, now, memory }) =>
       guarded(async () => {
         const wiki = fandom(spec.wiki);
-        const titles = recentBannerPages(await categoryMembers(http, wiki, spec.category, 50), now);
+        const titles = recentBannerPages(await categoryMembers(http, wiki, spec.category, MAX_BANNERS_PER_GAME), now);
         const revs = titles.length > 0 ? await lastRevisions(http, wiki, titles) : new Map<string, number>();
         const drafts: BannerDraft[] = [];
         let parsed = 0;
@@ -212,7 +225,7 @@ function fandomBanners(spec: BannerPageSpec): SourceDef {
         for (const key of Object.keys(memory.pages)) {
           if (key.startsWith(`${wiki.api}|`) && !current.has(key)) delete memory.pages[key];
         }
-        return judge("banners", true, await withThumbnails(http, wiki, drafts), parsed, dropped);
+        return judge("banners", true, await withThumbnails(http, wiki, publishable(drafts, now)), parsed, dropped);
       }),
   };
 }
@@ -224,11 +237,11 @@ const endfieldBanners: SourceDef = {
   label: "баннеры Arknights: Endfield (wiki.gg)",
   everyHours: 6,
   fallback: false,
-  run: ({ http }) =>
+  run: ({ http, now }) =>
     guarded(async () => {
       const text = await expandTemplates(http, ENDFIELD_WIKI, "{{Banner table|current}}\n{{Banner table|upcoming}}");
       const r = parseEndfieldTable(text, ENDFIELD_WIKI.pageUrl("Headhunting/Banners"));
-      return judge("banners", true, await withThumbnails(http, ENDFIELD_WIKI, r.drafts), r.parsed, r.dropped);
+      return judge("banners", true, await withThumbnails(http, ENDFIELD_WIKI, publishable(r.drafts, now)), r.parsed, r.dropped);
     }),
 };
 
@@ -317,10 +330,32 @@ export async function fetchKuroAnnouncements(
   }
 }
 
-/** Читает статьи анонсов и патчноутов, запоминает факты и забывает всё, что устарело. Возвращает предупреждения. */
+/**
+ * Читает статьи анонсов и патчноутов, запоминает факты и забывает всё, что устарело. Возвращает предупреждения.
+ * Меню может отдать сколько угодно статей, а читается за прогон не больше MAX_KURO_ARTICLES_PER_RUN самых
+ * новых; остальные — не ошибка: их прочтёт следующий прогон, когда новее них станет меньше, или они устареют.
+ */
 async function readKuroArticles(ctx: SourceContext, announcements: Announcement[], patchNotes: PatchNotes[]): Promise<string[]> {
   const { memory } = ctx;
-  const ids = [...new Set([...announcements.map((a) => a.articleId), ...patchNotes.map((p) => p.articleId)])];
+  const published = new Map<number, number>();
+  for (const { articleId, publishedAt } of [...announcements, ...patchNotes]) {
+    published.set(articleId, Math.max(published.get(articleId) ?? publishedAt, publishedAt));
+  }
+  let ids = [...published.keys()];
+  if (ids.length > MAX_KURO_ARTICLES_PER_RUN) {
+    const newest = new Set([...ids].sort((a, b) => published.get(b)! - published.get(a)!).slice(0, MAX_KURO_ARTICLES_PER_RUN));
+    ids = ids.filter((id) => newest.has(id)); // порядок прежний: сперва анонсы, затем патчноуты
+  }
+  // Поиски по номеру статьи и версии — через таблицы: поиск перебором по спискам на каждую статью вырос бы в квадрат.
+  const announced = new Set(announcements.map((a) => a.articleId));
+  const notesOf = new Map<number, PatchNotes[]>();
+  const newestOfVersion = new Map<string, number>(); // версия → статья самого нового её патчноута (список идёт от новых к старым)
+  for (const note of patchNotes) {
+    const same = notesOf.get(note.articleId);
+    if (same) same.push(note);
+    else notesOf.set(note.articleId, [note]);
+    if (!newestOfVersion.has(note.version)) newestOfVersion.set(note.version, note.articleId);
+  }
   const warnings: string[] = [];
   for (const id of ids) {
     const url = kuroArticleJsonUrl(id);
@@ -337,17 +372,17 @@ async function readKuroArticles(ctx: SourceContext, announcements: Announcement[
       // Ключ в kuroFacts появляется, только когда статья прочитана; пустой список — баннеров в ней не нашлось.
       // Статья, которую не удалось открыть (сеть, статус не 200, не JSON), ключа не получает (и не даёт сигнала),
       // а прошлые факты остаются.
-      if (announcements.some((a) => a.articleId === id)) {
+      if (announced.has(id)) {
         const key = String(id);
         const previous = memory.kuroFacts[key];
         const keep = text === null && previous !== undefined && previous.length > 0;
         memory.kuroFacts[key] = keep ? previous : kuroBannerFacts(lines, articleTitle(article));
       }
       const end = maintenanceEnd(lines);
-      for (const { version } of patchNotes.filter((p) => p.articleId === id)) {
+      for (const { version } of notesOf.get(id) ?? []) {
         // Строки техработ нет — уже известный срок версии не трогается. Два патчноута одной версии:
         // побеждает более новый (патчноуты идут от новых к старым), старый пишет, только если срока нет.
-        const newest = patchNotes.find((p) => p.version === version)?.articleId === id;
+        const newest = newestOfVersion.get(version) === id;
         if (end !== null && (newest || memory.kuroReleases[version] === undefined)) memory.kuroReleases[version] = end;
       }
       memory.validators[url] = res.validators;

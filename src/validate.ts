@@ -18,9 +18,13 @@ export const REWARDS_MAX = 300;
 export const BANNER_TITLE_MAX = 200;
 export const FEATURED_MAX = 10;
 export const FEATURED_NAME_MAX = 80;
-// Предел на игру: сколько кодов один источник отдаёт за запуск. Больше — это не
-// «кодов прибавилось», а испорченная страница или сломанный источник (см. judge).
+// Пределы на игру: сколько записей один источник отдаёт за запуск. Больше кодов — это не
+// «кодов прибавилось», а испорченная страница или сломанный источник (см. judge); лишние
+// баннеры (самые старые) отбрасываются: так одна страница не плодит запросы миниатюр.
 export const MAX_CODES_PER_GAME = 200;
+export const MAX_BANNERS_PER_GAME = 50;
+// Предел на запуск: сколько статей Kuro читается за раз; остальные подождут следующего запуска.
+export const MAX_KURO_ARTICLES_PER_RUN = 30;
 
 /** Награда кода умещается в предел длины. */
 export function rewardsFits(rewards: string): boolean {
