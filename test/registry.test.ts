@@ -1152,3 +1152,165 @@ test("анонсы Kuro: срок прогона вышел — следующа
   assert.deepEqual(next.ok && next.warnings, []);
   assert.deepEqual(Object.keys(memory.kuroFacts).sort(), [...ids].map(String).sort());
 });
+
+// Статья, что всегда не отвечает, не должна держать остальные: она откладывается и читается последней.
+
+const articleOf = (url: string) => Number(/(\d+)\.json$/.exec(url)![1]);
+
+test("анонсы Kuro: статья, что всегда не отвечает, откладывается — остальные читаются в следующие прогоны", async () => {
+  const k = kuroSite();
+  const requested: number[] = [];
+  const http = withArticleHook(k, (url) => {
+    requested.push(articleOf(url));
+    if (articleOf(url) === 9001) throw timeoutError();
+  });
+  const memory = emptyMemory();
+  // Прогон 1: самая новая статья первая, таймаут обрывает чтение — патчноут не прочитан, статья отложена.
+  assert.equal((await fetchKuroAnnouncements({ http, now: NOW, memory })).ok, true);
+  assert.deepEqual(requested, [9001]);
+  assert.deepEqual(memory.kuroDeferred, { "9001": NOW });
+  assert.deepEqual(memory.kuroReleases, {});
+  // Прогон 2: сперва статьи без отметки, отложенная — последней; патчноут теперь прочитан.
+  requested.length = 0;
+  assert.equal((await fetchKuroAnnouncements({ http, now: NOW + 3600, memory })).ok, true);
+  assert.deepEqual(requested, [9101, 9001]);
+  assert.deepEqual(memory.kuroReleases, { "9.9": RELEASE_END });
+  assert.deepEqual(memory.kuroFacts, {}, "анонс так и не прочитан, сигнала он не даёт");
+  assert.deepEqual(memory.kuroDeferred, { "9001": NOW + 3600 }, "отметка обновлена: статья снова не ответила");
+  // Прогон 3 и дальше: порядок тот же, остальные статьи не голодают.
+  requested.length = 0;
+  await fetchKuroAnnouncements({ http, now: NOW + 7200, memory });
+  assert.deepEqual(requested, [9101, 9001], "патчноут отвечает 304 и читается первым, отложенная — последней");
+});
+
+test("анонсы Kuro: отложенная статья, что снова отвечает, читается и теряет отметку", async () => {
+  const k = kuroSite();
+  const requested: number[] = [];
+  let down = true;
+  const http = withArticleHook(k, (url) => {
+    requested.push(articleOf(url));
+    if (down && articleOf(url) === 9001) throw timeoutError();
+  });
+  const memory = emptyMemory();
+  await fetchKuroAnnouncements({ http, now: NOW, memory });
+  assert.deepEqual(memory.kuroDeferred, { "9001": NOW });
+  down = false;
+  requested.length = 0;
+  const result = await fetchKuroAnnouncements({ http, now: NOW + 3600, memory });
+  assert.deepEqual(result.ok && result.warnings, []);
+  assert.deepEqual(requested, [9101, 9001]);
+  assert.deepEqual(memory.kuroFacts, { "9001": [FACT] });
+  assert.deepEqual(memory.kuroDeferred, {}, "успешное чтение снимает отметку");
+});
+
+test("анонсы Kuro: отложенная статья, ответившая 304, тоже теряет отметку; ответ с кодом отметку не снимает и чтение не останавливает", async () => {
+  const k = kuroSite();
+  const memory = emptyMemory();
+  await fetchKuroAnnouncements({ http: k.http, now: NOW, memory });
+  memory.kuroDeferred = { "9001": NOW - 10 };
+  const requested: number[] = [];
+  const http = withArticleHook(k, (url) => requested.push(articleOf(url)));
+  await fetchKuroAnnouncements({ http, now: NOW + 3600, memory });
+  assert.deepEqual(requested, [9101, 9001], "отложенная идёт последней, хотя новее");
+  assert.deepEqual(memory.kuroDeferred, {}, "304 — статья отвечает");
+  memory.kuroDeferred = { "9001": NOW - 10 };
+  requested.length = 0;
+  const missing = withArticleHook(k, (url) => {
+    requested.push(articleOf(url));
+    if (articleOf(url) === 9001) throw new StatusError(404, url);
+  });
+  const result = await fetchKuroAnnouncements({ http: missing, now: NOW + 7200, memory });
+  assert.equal(result.ok, true);
+  assert.deepEqual(requested, [9101, 9001]);
+  assert.deepEqual(memory.kuroDeferred, { "9001": NOW - 10 }, "404 — не сбой связи: отметка остаётся как была");
+});
+
+test("анонсы Kuro: из отложенных первой читается та, что отложена раньше, — они чередуются, а не голодают", async () => {
+  const k = kuroSite();
+  const memory = emptyMemory();
+  await fetchKuroAnnouncements({ http: k.http, now: NOW, memory });
+  // Обе статьи отложены: 9101 — давно, 9001 — недавно. Давно отложенная идёт первой, хотя 9001 новее.
+  memory.kuroDeferred = { "9001": NOW - 1000, "9101": NOW - 5000 };
+  k.site.etags[9001] = '"a2"';
+  k.site.etags[9101] = '"n2"';
+  const requested: number[] = [];
+  const http = withArticleHook(k, (url) => requested.push(articleOf(url)));
+  await fetchKuroAnnouncements({ http, now: NOW + 3600, memory });
+  assert.deepEqual(requested, [9101, 9001]);
+  assert.deepEqual(memory.kuroDeferred, {});
+  // Если и первая из отложенных не отвечает, вторая в этот прогон не читается, но в следующий идёт первой.
+  memory.kuroDeferred = { "9001": NOW - 1000, "9101": NOW - 5000 };
+  k.site.etags[9001] = '"a3"';
+  k.site.etags[9101] = '"n3"';
+  requested.length = 0;
+  const failing = withArticleHook(k, (url) => {
+    requested.push(articleOf(url));
+    if (articleOf(url) === 9101) throw timeoutError();
+  });
+  await fetchKuroAnnouncements({ http: failing, now: NOW + 7200, memory });
+  assert.deepEqual(requested, [9101], "сбой связи обрывает чтение, как и раньше");
+  assert.deepEqual(memory.kuroDeferred, { "9001": NOW - 1000, "9101": NOW + 7200 });
+  requested.length = 0;
+  await fetchKuroAnnouncements({ http: failing, now: NOW + 10_800, memory });
+  assert.deepEqual(requested, [9001, 9101], "9001 теперь отложена раньше — идёт первой и читается");
+  assert.deepEqual(memory.kuroDeferred, { "9101": NOW + 10_800 });
+});
+
+test("анонсы Kuro: отметка отложенной статьи уходит, когда анонса больше нет в меню", async () => {
+  const k = kuroSite();
+  const memory = emptyMemory();
+  const http = withArticleHook(k, (url) => {
+    if (articleOf(url) === 9001) throw timeoutError();
+  });
+  await fetchKuroAnnouncements({ http, now: NOW, memory });
+  assert.deepEqual(Object.keys(memory.kuroDeferred), ["9001"]);
+  k.site.menu = KURO_MENU.filter((a) => a.articleId !== 9001);
+  k.site.menuEtag = '"m2"';
+  await fetchKuroAnnouncements({ http: k.http, now: NOW + 3600, memory });
+  assert.deepEqual(memory.kuroDeferred, {});
+});
+
+test("анонсы Kuro: отметка отложенной статьи уходит, когда статья старше 21 дня, даже если меню не менялось", async () => {
+  const k = kuroSite();
+  const memory = emptyMemory();
+  const http = withArticleHook(k, (url) => {
+    if (articleOf(url) === 9001) throw timeoutError();
+  });
+  await fetchKuroAnnouncements({ http, now: NOW, memory });
+  assert.deepEqual(Object.keys(memory.kuroDeferred), ["9001"]);
+  await fetchKuroAnnouncements({ http: k.http, now: NOW + 40 * 86400, memory }); // меню отвечает 304, свежесть считается по часам
+  assert.deepEqual(memory.kuroDeferred, {});
+});
+
+test("анонсы Kuro: отложенная статья остаётся среди тридцати самых новых, но идёт последней", async () => {
+  const k = kuroSite();
+  const stamp = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+  const ids = Array.from({ length: 40 }, (_, i) => 20_000 + i); // 20 000 — самая новая
+  k.site.menu = ids.map((articleId, i) => ({
+    articleId,
+    articleTitle: "[Version 9.9 Featured Resonator/Weapon Convene: Phase I]",
+    startTime: stamp(Date.UTC(2026, 8, 15, 23, 59) - i * 60_000),
+  }));
+  for (const id of ids) {
+    k.site.html[id] = ANNOUNCEMENT_HTML;
+    k.site.etags[id] = `"e${id}"`;
+  }
+  const requested: number[] = [];
+  const http = withArticleHook(k, (url) => requested.push(articleOf(url)));
+  const memory = emptyMemory();
+  memory.kuroDeferred = { "20000": NOW - 60 };
+  await fetchKuroAnnouncements({ http, now: NOW, memory });
+  assert.equal(requested.length, MAX_KURO_ARTICLES_PER_RUN, "предел прежний");
+  assert.deepEqual(requested, [...ids.slice(1, MAX_KURO_ARTICLES_PER_RUN), 20_000], "остальные самые новые — по порядку, отложенная — в конце");
+  assert.deepEqual(memory.kuroDeferred, {});
+});
+
+test("анонсы Kuro: без отложенных статей порядок чтения прежний — анонсы, затем патчноуты", async () => {
+  const k = kuroSite();
+  const requested: number[] = [];
+  const http = withArticleHook(k, (url) => requested.push(articleOf(url)));
+  const memory = emptyMemory();
+  await fetchKuroAnnouncements({ http, now: NOW, memory });
+  assert.deepEqual(requested, [9001, 9101]);
+  assert.deepEqual(memory.kuroDeferred, {});
+});

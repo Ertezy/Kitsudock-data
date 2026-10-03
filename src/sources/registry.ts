@@ -43,6 +43,12 @@ export interface SourceMemory {
   kuroFacts: Record<string, KuroBannerFact[]>;
   /** Конец техработ версии, из её патчноута, — по номеру версии. */
   kuroReleases: Record<string, number>;
+  /**
+   * Статьи, при чтении которых был сбой связи (таймаут, обрыв), — по номеру статьи строкой, со временем (секунды) последнего сбоя.
+   * Такие статьи читаются после остальных, самая давно отложенная первой, а удачное чтение снимает отметку:
+   * статья, что всегда не отвечает, не должна держать все остальные. Отметка живёт, пока статья в свежем окне меню.
+   */
+  kuroDeferred: Record<string, number>;
   /** Арт прошлого запуска для баннеров без картинки (sources/art.ts). */
   bannerArt: ArtMemory;
   /** Последняя опубликованная версия приложения (sources/appRelease.ts); null — релизов нет или ещё не спрашивали. */
@@ -59,6 +65,7 @@ export const emptyMemory = (): SourceMemory => ({
   kuroPatchNotes: [],
   kuroFacts: {},
   kuroReleases: {},
+  kuroDeferred: {},
   bannerArt: {},
   appRelease: null,
   launcherArt: {},
@@ -375,6 +382,9 @@ export async function fetchKuroAnnouncements(
  * не лучше, — и вышедший бюджет KURO_ARTICLES_BUDGET_MS или срок всего прогона (ctx.deadline) обрывает его так же.
  * Без этого тридцать статей по 45 секунд (таймаут и повтор) не укладывались бы в лимит прогона, и состояние не сохранялось бы.
  * Ответ с кодом (404 и подобные) и не JSON — про одну статью: чтение идёт дальше.
+ * Статья, на которой был сбой связи, откладывается (`memory.kuroDeferred`) и в следующие прогоны читается последней:
+ * иначе самая новая статья, что всегда не отвечает, обрывала бы чтение каждый раз и ни одна старая не прочиталась бы.
+ * Среди отложенных первой идёт отложенная раньше, так что они чередуются.
  */
 async function readKuroArticles(ctx: SourceContext, announcements: Announcement[], patchNotes: PatchNotes[]): Promise<string[]> {
   const { memory } = ctx;
@@ -387,6 +397,10 @@ async function readKuroArticles(ctx: SourceContext, announcements: Announcement[
     const newest = new Set([...ids].sort((a, b) => published.get(b)! - published.get(a)!).slice(0, MAX_KURO_ARTICLES_PER_RUN));
     ids = ids.filter((id) => newest.has(id)); // порядок прежний: сперва анонсы, затем патчноуты
   }
+  // Отложенные — в конец; остальные в прежнем порядке (сперва анонсы, затем патчноуты), отложенные — самая давняя первой.
+  const deferred = memory.kuroDeferred;
+  const isDeferred = (id: number) => Object.hasOwn(deferred, String(id));
+  ids = [...ids.filter((id) => !isDeferred(id)), ...ids.filter(isDeferred).sort((a, b) => deferred[String(a)]! - deferred[String(b)]!)];
   // Поиски по номеру статьи и версии — через таблицы: поиск перебором по спискам на каждую статью вырос бы в квадрат.
   const announced = new Set(announcements.map((a) => a.articleId));
   const notesOf = new Map<number, PatchNotes[]>();
@@ -408,6 +422,7 @@ async function readKuroArticles(ctx: SourceContext, announcements: Announcement[
     const url = kuroArticleJsonUrl(id);
     try {
       const res = await conditional(ctx, url);
+      delete deferred[String(id)]; // ответ пришёл (200 или 304) — статья снова отвечает
       if (res === null) continue; // не менялась — прошлый результат остаётся
       const article: unknown = JSON.parse(res.body);
       // Ответ 200 без текста статьи (не объект, нет articleContent или он не строка) — статья прочитана, баннеров
@@ -436,6 +451,7 @@ async function readKuroArticles(ctx: SourceContext, announcements: Announcement[
     } catch (error) {
       warnings.push(`статья Kuro ${id}: ${(error as Error).message}`);
       if (isTransportError(error)) {
+        deferred[String(id)] = ctx.now;
         warnings.push("чтение статей Kuro остановлено: сайт не отвечает, остальные — в следующий прогон");
         break;
       }
@@ -449,6 +465,7 @@ async function readKuroArticles(ctx: SourceContext, announcements: Announcement[
     for (const { start } of banners) if (start.kind === "release") versions.add(start.version);
   }
   for (const version of Object.keys(memory.kuroReleases)) if (!versions.has(version)) delete memory.kuroReleases[version];
+  for (const key of Object.keys(deferred)) if (!published.has(Number(key))) delete deferred[key]; // статья вышла из свежего окна меню
   const urls = new Set(ids.map(kuroArticleJsonUrl));
   for (const url of Object.keys(memory.validators)) if (url.startsWith(KURO_ARTICLE_JSON_DIR) && !urls.has(url)) delete memory.validators[url];
   return warnings;

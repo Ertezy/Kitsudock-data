@@ -348,3 +348,31 @@ test("строка о запуске в журнале: у пропущенно�
   assert.equal(runStatus({ kind: "skipped", reason: "вышло время прогона" }), "skipped — вышло время прогона");
   assert.equal(runStatus({ kind: "skipped" }), "skipped");
 });
+
+test("состояние без отложенных статей Kuro получает пустой список, остальное не трогается", () => {
+  const dir = mkdtempSync(join(tmpdir(), "collector-"));
+  const path = join(dir, "state.json");
+  const lastRun = { [KURO_SIGNAL.id]: NOW - 60 };
+  const memory = {
+    revisions: {}, pages: {}, validators: { [KURO_MENU_URL]: { etag: '"k1"' } }, kuro: [], kuroFacts: {}, kuroReleases: {}, kuroPatchNotes: [],
+    bannerArt: {}, appRelease: null, launcherArt: {},
+  };
+  writeFileSync(path, JSON.stringify({ version: 1, base: null, published: null, lastPublishedAt: null, lastRun, failures: {}, memory }));
+  const loaded = loadState(path);
+  assert.ok(loaded);
+  assert.deepEqual(loaded.memory.kuroDeferred, {});
+  assert.deepEqual(loaded.lastRun, lastRun, "сигнал Kuro не перезапускается");
+  assert.deepEqual(loaded.memory.validators, memory.validators, "метки меню остаются");
+  assert.deepEqual(emptyState().memory.kuroDeferred, {});
+});
+
+test("отложенные статьи Kuro не того вида — состояние считается отсутствующим, правильные читаются как есть", () => {
+  const dir = mkdtempSync(join(tmpdir(), "collector-"));
+  const path = join(dir, "state.json");
+  const valid = emptyState();
+  writeFileSync(path, JSON.stringify({ ...valid, memory: { ...valid.memory, kuroDeferred: [] } }));
+  assert.equal(loadState(path), null, "kuroDeferred — список");
+  valid.memory.kuroDeferred["9001"] = NOW - 60;
+  saveState(valid, path);
+  assert.deepEqual(loadState(path), valid);
+});

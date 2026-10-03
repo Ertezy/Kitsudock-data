@@ -65,6 +65,7 @@ function looksLikeState(value: unknown): value is State {
     Array.isArray(memory.kuroPatchNotes) &&
     isRecord(memory.kuroFacts) &&
     isRecord(memory.kuroReleases) &&
+    isRecord(memory.kuroDeferred) &&
     isRecord(memory.bannerArt) &&
     (memory.appRelease === null || isRecord(memory.appRelease)) &&
     isRecord(memory.launcherArt)
@@ -83,11 +84,13 @@ function looksLikeState(value: unknown): value is State {
  * заполнится на первом же прогоне, остальное при этом не трогается. То же с памятью о
  * версии приложения (1 октября): null, спросится на первом прогоне.
  * И с памятью о фонах лаунчера (2 октября): пустая, заполнится на первом прогоне.
+ * И с отложенными статьями Kuro (4 октября): список пуст, отметки появятся с первым сбоем связи.
  */
 function upgradeState(state: Record<string, unknown>, memory: Record<string, unknown>): void {
   memory.bannerArt ??= {};
   memory.appRelease ??= null;
   memory.launcherArt ??= {};
+  memory.kuroDeferred ??= {};
   if (memory.kuroFacts !== undefined && memory.kuroReleases !== undefined && memory.kuroPatchNotes !== undefined) return;
   memory.kuroFacts ??= {};
   memory.kuroReleases ??= {};
