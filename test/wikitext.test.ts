@@ -72,3 +72,55 @@ test("правильно вложенные {{ }} и [[ ]] по-прежнему
   const parts = splitTopLevel("CODE1234|{{Item List|Foo*1;Bar*2|mode=br}}|[[Page|Text|with pipe]]|end");
   assert.deepEqual(parts, ["CODE1234", "{{Item List|Foo*1;Bar*2|mode=br}}", "[[Page|Text|with pipe]]", "end"]);
 });
+
+// Предел времени на порядки щедрее нормы: тест ловит возврат квадратичного или
+// откатывающегося разбора, а не ровность замеров.
+const TIME_LIMIT_MS = 500;
+
+const ROW_A = "{{Code Row|AAAA1111|G|Primogem*60|2026-09-01|unknown}}";
+const ROW_B = "{{Code Row|BBBB2222|G|Mora*10000|2026-09-02|unknown}}";
+const INNER_A = ROW_A.slice(2, -2);
+const INNER_B = ROW_B.slice(2, -2);
+
+test("параметры: имя режется по первому «=», не похожее на имя остаётся позиционным", () => {
+  const p = templateParams("T| a b = x=y |http://e.com/?q=1|=orphan|k=");
+  assert.deepEqual(p.positional, ["http://e.com/?q=1", "=orphan"]);
+  assert.deepEqual([...p.named], [["a b", "x=y"], ["k", ""]]);
+});
+
+test("параметр из 100 000 пробелов и «x» разбирается за линейное время", () => {
+  const started = performance.now();
+  const p = templateParams(`Tmpl|${" ".repeat(100_000)}x`);
+  const ms = performance.now() - started;
+  assert.deepEqual(p.positional, ["x"]);
+  assert.equal(p.named.size, 0);
+  assert.ok(ms < TIME_LIMIT_MS, `заняло ${ms.toFixed(0)} мс`);
+});
+
+test("200 КБ вложенных скобок обходятся за линейное время", () => {
+  const nested = "{{".repeat(50_000) + "}}".repeat(50_000);
+  const started = performance.now();
+  const rows = findTemplates(nested, "Code Row");
+  const ms = performance.now() - started;
+  assert.deepEqual(rows, []);
+  assert.ok(ms < TIME_LIMIT_MS, `заняло ${ms.toFixed(0)} мс`);
+});
+
+test("вызов в глубине вложенности находится, вложенные внутрь найденного не дублируются", () => {
+  const depth = 10_000;
+  const wrapped = "{{".repeat(depth) + ROW_A + "}}".repeat(depth);
+  assert.deepEqual(findTemplates(wrapped, "Code Row"), [INNER_A]);
+  assert.deepEqual(findTemplates("{{Code Row|x{{Code Row|y}}}} {{Code Row|z}}", "Code Row"), ["Code Row|x{{Code Row|y}}", "Code Row|z"]);
+});
+
+test("незакрытая {{ выше строк не прячет их", () => {
+  assert.deepEqual(findTemplates(`{{Broken template\n${ROW_A}\n${ROW_B}\n`, "Code Row"), [INNER_A, INNER_B]);
+});
+
+test("незакрытая {{ внутри nowiki выше строк не прячет их", () => {
+  assert.deepEqual(findTemplates(`<nowiki>{{Code Row</nowiki>\n${ROW_A}\n${ROW_B}\n`, "Code Row"), [INNER_A, INNER_B]);
+});
+
+test("незакрытая {{ между строками не прячет ни предыдущую, ни следующую", () => {
+  assert.deepEqual(findTemplates(`${ROW_A}\n{{Broken\n${ROW_B}`, "Code Row"), [INNER_A, INNER_B]);
+});

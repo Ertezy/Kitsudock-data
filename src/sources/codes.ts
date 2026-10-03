@@ -74,8 +74,10 @@ export function parseRowCodes(
   return { found, codes, parsed, dropped };
 }
 
+// Серия пробелов между `||` покрыта одним `[^|]*` и не пересекается с соседними
+// `\s*` — иначе движок на длинной серии перебирает все способы её разделить.
 const WUWA_ROW =
-  /<code>([^<]+)<\/code>\s*\|\|\s*[^|]*?\s*\|\|\s*(\{\{Card List[\s\S]*?\}\})[\s\S]*?Valid until:\s*([^'<\n]+)/g;
+  /<code>([^<]+)<\/code>\s*\|\|[^|]*\|\|\s*(\{\{Card List[\s\S]*?\}\})[\s\S]*?Valid until:\s*([^'<\n]+)/g;
 
 export function parseWuwaCodes(wikitext: string, source: string): ParsedCodes {
   const start = wikitext.indexOf("===Active===");

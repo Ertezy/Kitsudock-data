@@ -172,3 +172,34 @@ test("Genshin: незакрытая [[ в награде не проглатыв
   assert.equal(r.codes[0]!.expiresAt, null);
   assert.equal(r.codes[0]!.rewards, "Primogem*60 [[Broken link");
 });
+
+// Предел времени на порядки щедрее нормы: тест ловит возврат квадратичного или
+// откатывающегося разбора, а не ровность замеров.
+const TIME_LIMIT_MS = 500;
+
+test("Wuthering Waves: пробелы и табы вокруг || допустимы", () => {
+  const page = "===Active===\n|<code>SPACED</code>  ||\tAll  || {{Card List|Astrite*50|delim=;}}\n|Discovered: May 1, 2026<br />'''Valid until: Unknown'''";
+  const r = parseWuwaCodes(page, "https://x");
+  assert.deepEqual(r.codes.map((c) => [c.code, c.rewards, c.expiresAt]), [["SPACED", "Astrite ×50", null]]);
+});
+
+test("Wuthering Waves: 100 000 пробелов после разделителя разбираются за линейное время", () => {
+  const page = `===Active===\n<code>AAAA</code> ||${" ".repeat(100_000)}`;
+  const started = performance.now();
+  const r = parseWuwaCodes(page, "https://x");
+  const ms = performance.now() - started;
+  assert.equal(r.found, true);
+  assert.equal(r.codes.length, 0);
+  assert.ok(ms < TIME_LIMIT_MS, `заняло ${ms.toFixed(0)} мс`);
+});
+
+test("Genshin: незакрытая {{ выше строк (в том числе в nowiki) не обнуляет коды", () => {
+  const ROWS =
+    "{{Code Row|AAAA1111|G|Primogem*60|2026-09-01|unknown}}\n{{Code Row|BBBB2222|G|Mora*10000|2026-09-02|unknown}}";
+  for (const head of ["{{Broken template\n", "<nowiki>{{Code Row</nowiki>\n"]) {
+    const r = parseRowCodes(head + ROWS, "Code Row", "genshin", GI_PAGE);
+    assert.deepEqual(r.codes.map((c) => c.code), ["AAAA1111", "BBBB2222"]);
+    assert.equal(r.parsed, 2);
+    assert.equal(r.dropped, 0);
+  }
+});

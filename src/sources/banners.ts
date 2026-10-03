@@ -100,9 +100,20 @@ const decode = (text: string) => text.replace(/&(?:amp|quot|#39|lt|gt|nbsp);/g, 
 
 const EF_TITLE = /<div class="header"[^>]*>([^<]+)<\/div>/;
 const EF_FILE = /\[\[File:([^|\]]+)\|/;
+// Срок берётся целиком, от `<span>` до скрытого `<span>` со смещением, и режется по
+// «&ndash;» уже в коде (splitRange): ленивые группы по обе стороны от разделителя
+// на длинной строке перебирали бы все его положения.
 const EF_TIMES =
-  /AM \/ EU<\/abbr>:<\/b>\s*<span[^>]*>([^<]+?)\s*&ndash;\s*([^<]+?)\s*<span class="visually-hidden">\((UTC[^)]*)\)<\/span>/;
+  /AM \/ EU<\/abbr>:<\/b>\s*<span[^>]*>([^<]*)<span class="visually-hidden">\((UTC[^)]*)\)<\/span>/;
 const EF_OPERATOR = /<\/span>\s*\[\[([^\]|]+)\]\]/;
+
+const DASH = "&ndash;";
+
+/** «Sep 01, 2026, 23:00 &ndash; Sep 30, 2026, 11:59 » → обе даты без пробелов по краям; null, если разделителя нет. */
+function splitRange(text: string): [string, string] | null {
+  const at = text.indexOf(DASH);
+  return at === -1 ? null : [text.slice(0, at).trim(), text.slice(at + DASH.length).trim()];
+}
 
 /** Раскрытая таблица {{Banner table|…}} с wiki.gg. Время — строка AM / EU (европейский сервер). */
 export function parseEndfieldTable(expanded: string, pageUrl: string): { drafts: BannerDraft[]; parsed: number; dropped: number } {
@@ -114,9 +125,10 @@ export function parseEndfieldTable(expanded: string, pageUrl: string): { drafts:
     const times = EF_TIMES.exec(row);
     const limited = row.split("Limited operators:")[1] ?? "";
     const operator = EF_OPERATOR.exec(limited)?.[1];
-    const start = times ? parseEnglishDate(times[1]!) : null;
-    const end = times ? parseEnglishDate(times[2]!) : null;
-    const offset = times ? parseOffset(times[3]!) : null;
+    const range = times ? splitRange(times[1]!) : null;
+    const start = range ? parseEnglishDate(range[0]) : null;
+    const end = range ? parseEnglishDate(range[1]) : null;
+    const offset = times ? parseOffset(times[2]!) : null;
     if (!title || !start || !end || offset === null) {
       dropped++;
       continue;

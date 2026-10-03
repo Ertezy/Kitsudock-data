@@ -198,3 +198,37 @@ test("ennead.cc: слишком длинное имя персонажа — б�
   assert.equal(r.parsed, 1);
   assert.equal(r.dropped, 1);
 });
+
+// Предел времени на порядки щедрее нормы: тест ловит возврат квадратичного или
+// откатывающегося разбора, а не ровность замеров.
+const TIME_LIMIT_MS = 500;
+
+test("Endfield: время с лишними пробелами вокруг &ndash; по-прежнему разбирается", () => {
+  const row = ENDFIELD.replace("23:00 &ndash; Sep 30", "23:00 \t &ndash;\n  Sep 30").replace("11:59 <span", "11:59   <span");
+  const r = parseEndfieldTable(row, "https://endfield.wiki.gg/wiki/Headhunting/Banners");
+  assert.equal(r.drafts.length, 1);
+  assert.equal(r.drafts[0]!.banner.startsAt, utc(2026, 9, 2, 4, 0));
+  assert.equal(r.drafts[0]!.banner.endsAt, utc(2026, 9, 30, 16, 59));
+});
+
+test("Endfield: 20 000 пробелов по обе стороны от &ndash; без закрывающего span — линейное время, строка выброшена", () => {
+  const pad = " ".repeat(20_000);
+  const row = `<tr valign="top"><div class="header">Winter Hunt</div><b><abbr title="Americas / Europe">AM / EU</abbr>:</b> <span>${pad}&ndash;${pad}`;
+  const started = performance.now();
+  const r = parseEndfieldTable(row, "https://endfield.wiki.gg/wiki/Headhunting/Banners");
+  const ms = performance.now() - started;
+  assert.equal(r.parsed, 1);
+  assert.equal(r.dropped, 1);
+  assert.equal(r.drafts.length, 0);
+  assert.ok(ms < TIME_LIMIT_MS, `заняло ${ms.toFixed(0)} мс`);
+});
+
+test("Endfield: 40 000 «&ndash;» подряд без закрывающего span — линейное время, строка выброшена", () => {
+  const row = `<tr valign="top"><div class="header">Winter Hunt</div><b><abbr title="Americas / Europe">AM / EU</abbr>:</b> <span>${"&ndash;".repeat(40_000)}<b>`;
+  const started = performance.now();
+  const r = parseEndfieldTable(row, "https://endfield.wiki.gg/wiki/Headhunting/Banners");
+  const ms = performance.now() - started;
+  assert.equal(r.dropped, 1);
+  assert.equal(r.drafts.length, 0);
+  assert.ok(ms < TIME_LIMIT_MS, `заняло ${ms.toFixed(0)} мс`);
+});

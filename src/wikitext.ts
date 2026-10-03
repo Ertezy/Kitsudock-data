@@ -6,63 +6,77 @@ export function stripComments(text: string): string {
   return text.replace(/<!--[\s\S]*?(?:-->|$)/g, "");
 }
 
-/** Индекс первой из закрывающих `}}` для `{{` в позиции start; -1, если не закрыт. */
-function matchBraces(text: string, start: number): number {
-  let depth = 0;
-  for (let j = start; j < text.length - 1; j++) {
-    if (text[j] === "{" && text[j + 1] === "{") {
-      depth++;
+/**
+ * Согласованные пары `open`/`close` — обычным стеком, за один проход: [позиция
+ * открывающего, позиция закрывающего], по возрастанию позиции открывающего.
+ * Незакрытый (или лишний закрывающий) токен в результат не попадает.
+ */
+function braceSpans(text: string, open: string, close: string): [number, number][] {
+  const starts: number[] = [];
+  const ends: number[] = [];
+  const stack: number[] = [];
+  for (let j = 0; j < text.length - 1; j++) {
+    if (text.startsWith(open, j)) {
+      stack.push(starts.length);
+      starts.push(j);
+      ends.push(-1);
       j++;
-    } else if (text[j] === "}" && text[j + 1] === "}") {
-      depth--;
-      if (depth === 0) return j;
+    } else if (text.startsWith(close, j)) {
+      const k = stack.pop();
+      if (k !== undefined) ends[k] = j;
       j++;
     }
+  }
+  const spans: [number, number][] = [];
+  for (let k = 0; k < starts.length; k++) {
+    if (ends[k] !== -1) spans.push([starts[k]!, ends[k]!]);
+  }
+  return spans;
+}
+
+/** Индекс первого `|` или перевода строки начиная с from; -1, если их больше нет. */
+function nextSeparator(text: string, from: number): number {
+  for (let j = from; j < text.length; j++) {
+    if (text[j] === "|" || text[j] === "\n") return j;
   }
   return -1;
 }
 
-/** Все вызовы шаблона name — содержимое без внешних скобок. Ищет и внутри других шаблонов. */
+/**
+ * Все вызовы шаблона name — содержимое без внешних скобок. Ищет и внутри других
+ * шаблонов, но не внутри найденного. Незакрытая `{{` читается как обычный текст:
+ * вызовы после неё по-прежнему находятся.
+ */
 export function findTemplates(text: string, name: string): string[] {
   const clean = stripComments(text);
   const found: string[] = [];
-  let i = clean.indexOf("{{");
-  while (i !== -1) {
-    const end = matchBraces(clean, i);
-    if (end === -1) break;
-    const inner = clean.slice(i + 2, end);
-    const head = inner.split(/[|\n]/, 1)[0]!.trim();
-    if (head === name) {
-      found.push(inner);
-      i = clean.indexOf("{{", end + 2);
-    } else {
-      i = clean.indexOf("{{", i + 2);
+  let skipUntil = 0;
+  // Начала идут по возрастанию, поэтому следующий разделитель ищется заново, только
+  // когда прежний остался позади: весь обход — один проход по тексту.
+  let separator = -2; // -2 — ещё не искали, -1 — разделителей больше нет
+  for (const [start, end] of braceSpans(clean, "{{", "}}")) {
+    if (start < skipUntil) continue;
+    const from = start + 2;
+    if (separator !== -1 && separator < from) separator = nextSeparator(clean, from);
+    const headEnd = separator === -1 || separator > end ? end : separator;
+    if (clean.slice(from, headEnd).trim() === name) {
+      found.push(clean.slice(from, end));
+      skipUntil = end + 2;
     }
   }
   return found;
 }
 
 /**
- * Позиции `open`/`close`, которые реально образуют согласованную пару, — обычным
- * стеком. Незакрытый (или лишний закрывающий) токен в набор не попадает и ниже
- * читается как обычный текст, а не как открывающая/закрывающая скобка.
+ * Позиции `open`/`close`, которые реально образуют согласованную пару. Незакрытый
+ * (или лишний закрывающий) токен в набор не попадает и ниже читается как обычный
+ * текст, а не как открывающая/закрывающая скобка.
  */
 function matchedPairs(text: string, open: string, close: string): Set<number> {
-  const stack: number[] = [];
   const matched = new Set<number>();
-  for (let j = 0; j < text.length - 1; j++) {
-    const two = text.slice(j, j + 2);
-    if (two === open) {
-      stack.push(j);
-      j++;
-    } else if (two === close) {
-      const start = stack.pop();
-      if (start !== undefined) {
-        matched.add(start);
-        matched.add(j);
-      }
-      j++;
-    }
+  for (const [start, end] of braceSpans(text, open, close)) {
+    matched.add(start);
+    matched.add(end);
   }
   return matched;
 }
@@ -115,13 +129,18 @@ export interface TemplateParams {
   named: Map<string, string>;
 }
 
+const NAME = /^[A-Za-z0-9_ ]+$/;
+
 /** Параметры вызова: первая часть — имя шаблона, остальные — позиционные или «имя = значение». */
 export function templateParams(inner: string): TemplateParams {
   const positional: string[] = [];
   const named = new Map<string, string>();
   for (const part of splitTopLevel(inner).slice(1)) {
-    const m = /^\s*([A-Za-z0-9_ ]+?)\s*=([\s\S]*)$/.exec(part);
-    if (m) named.set(m[1]!, m[2]!.trim());
+    // Имя — всё до первого «=»; на похожесть на имя проверяется уже обрезанное,
+    // так что длинные серии пробелов регулярным выражением не перебираются.
+    const eq = part.indexOf("=");
+    const name = eq === -1 ? "" : part.slice(0, eq).trim();
+    if (NAME.test(name)) named.set(name, part.slice(eq + 1).trim());
     else positional.push(part.trim());
   }
   return { positional, named };
