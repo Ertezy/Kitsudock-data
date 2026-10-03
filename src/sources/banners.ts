@@ -59,7 +59,8 @@ export function parseBannerPage(wikitext: string, spec: BannerPageSpec, title: s
     .filter((name) => name !== "" && !/^unknown/i.test(name));
   const image = (named.get("image") ?? "").trim();
   const bannerTitle = title.split("/")[0]!.trim();
-  if (!bannerFits(bannerTitle, featured)) return { kind: "bad", reason: "название или список персонажей длиннее предела" };
+  // Страница без названия (`/a/2099-01-01`) или с названием не по пределам — не баннер: выбрасывается здесь, а не на проверке файла.
+  if (!bannerFits(bannerTitle, featured)) return { kind: "bad", reason: "название пустое или название и список персонажей не по пределам" };
   return {
     kind: "banner",
     draft: {
@@ -203,7 +204,9 @@ export function parseEndfieldTable(expanded: string, pageUrl: string): { drafts:
       continue;
     }
     const bannerTitle = decode(title).trim();
-    const featured = operator ? [decode(operator).trim()] : [];
+    // «[[ ]]» вместо имени — оператора нет: баннер остаётся без имени, пустое имя в список не попадает.
+    const operatorName = operator ? decode(operator).trim() : "";
+    const featured = operatorName === "" ? [] : [operatorName];
     if (!bannerFits(bannerTitle, featured)) {
       dropped++;
       continue;

@@ -3,7 +3,7 @@
 
 import type { Code, GameId } from "../types.ts";
 import { atOffset, inTimeZone, parseEnglishDate, parseIsoLike } from "../time.ts";
-import { rewardsFits } from "../validate.ts";
+import { codeOk, rewardsFits } from "../validate.ts";
 import { findTemplates, rewardsText, templateParams } from "../wikitext.ts";
 
 export interface ParsedCodes {
@@ -63,7 +63,7 @@ export function parseRowCodes(
     const expiresAt = hoyoExpiry(expiry);
     const group = cell.split(";").map((code) => code.trim());
     const rewardsValue = rewardsText(rewards);
-    if (expiresAt === undefined || group.some((code) => !CODE_PATTERN.test(code)) || !rewardsFits(rewardsValue)) {
+    if (expiresAt === undefined || group.some((code) => !codeOk(code)) || !rewardsFits(rewardsValue)) {
       dropped++;
       continue;
     }
@@ -138,7 +138,7 @@ export function parseWuwaCodes(wikitext: string, source: string): ParsedCodes {
       expiresAt = inTimeZone(parts, "America/Los_Angeles");
     }
     const rewardsValue = rewardsText(card);
-    if (!CODE_PATTERN.test(code) || !rewardsFits(rewardsValue)) {
+    if (!codeOk(code) || !rewardsFits(rewardsValue)) {
       dropped++;
       continue;
     }
@@ -162,7 +162,7 @@ export function parseEnneadCodes(json: unknown, gameId: GameId): ParsedCodes {
     const code = typeof item.code === "string" ? item.code.trim() : "";
     const rewardsList = Array.isArray(item.rewards) ? item.rewards.filter((r) => typeof r === "string") : [];
     const rewardsValue = rewardsList.join(", ");
-    if (!CODE_PATTERN.test(code) || !rewardsFits(rewardsValue)) {
+    if (!codeOk(code) || !rewardsFits(rewardsValue)) {
       dropped++;
       continue;
     }

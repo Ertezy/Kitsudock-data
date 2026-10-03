@@ -18,15 +18,30 @@ export const REWARDS_MAX = 300;
 export const BANNER_TITLE_MAX = 200;
 export const FEATURED_MAX = 10;
 export const FEATURED_NAME_MAX = 80;
+// Предел на игру: сколько кодов один источник отдаёт за запуск. Больше — это не
+// «кодов прибавилось», а испорченная страница или сломанный источник (см. judge).
+export const MAX_CODES_PER_GAME = 200;
 
 /** Награда кода умещается в предел длины. */
 export function rewardsFits(rewards: string): boolean {
   return rewards.length <= REWARDS_MAX;
 }
 
-/** Название баннера и список персонажей умещаются в пределы длины. */
+// Одна проверка на вид записи — и у парсеров, и у validateHub. Запись, не прошедшую
+// её, парсер выбрасывает сам, а не отдаёт на проверку всего файла.
+
+/** Название баннера: не пустое (одни пробелы — пусто) и не длиннее предела. */
+export const bannerTitleOk = (title: string): boolean => title.trim() !== "" && title.length <= BANNER_TITLE_MAX;
+
+/** Имя в списке персонажей: не пустое (одни пробелы — пусто) и не длиннее предела. */
+export const featuredNameOk = (name: string): boolean => name.trim() !== "" && name.length <= FEATURED_NAME_MAX;
+
+/** Код: латинские буквы и цифры, 4–40 знаков. */
+export const codeOk = (code: string): boolean => CODE_PATTERN.test(code);
+
+/** Название баннера и список персонажей проходят свои проверки и умещаются в пределы. */
 export function bannerFits(title: string, featured: string[]): boolean {
-  return title.length <= BANNER_TITLE_MAX && featured.length <= FEATURED_MAX && featured.every((f) => f.length <= FEATURED_NAME_MAX);
+  return bannerTitleOk(title) && featured.length <= FEATURED_MAX && featured.every(featuredNameOk);
 }
 
 const isInt = (value: unknown) => Number.isInteger(value);
@@ -62,7 +77,7 @@ export function validateHub(hub: HubData, maxBytes = MAX_FILE_BYTES): string[] {
   hub.codes.forEach((c, i) => {
     const at = `codes[${i}]`;
     if (!knownGame(c.gameId)) fail(`${at}.gameId: игры ${c.gameId} нет в файле`);
-    if (!(typeof c.code === "string" && CODE_PATTERN.test(c.code))) fail(`${at}.code: латинские буквы и цифры, 4–40 знаков`);
+    if (!(typeof c.code === "string" && codeOk(c.code))) fail(`${at}.code: латинские буквы и цифры, 4–40 знаков`);
     if (!text(c.rewards, 0, REWARDS_MAX)) fail(`${at}.rewards: до 300 знаков`);
     if (c.expiresAt !== null && !isInt(c.expiresAt)) fail(`${at}.expiresAt: целое или null`);
     if (!text(c.region, 1, 16)) fail(`${at}.region: 1–16 знаков`);
@@ -72,8 +87,8 @@ export function validateHub(hub: HubData, maxBytes = MAX_FILE_BYTES): string[] {
   hub.banners.forEach((b, i) => {
     const at = `banners[${i}]`;
     if (!knownGame(b.gameId)) fail(`${at}.gameId: игры ${b.gameId} нет в файле`);
-    if (!text(b.title, 1, BANNER_TITLE_MAX)) fail(`${at}.title: 1–200 знаков`);
-    if (!Array.isArray(b.featured) || b.featured.length > FEATURED_MAX || !b.featured.every((f) => text(f, 1, FEATURED_NAME_MAX))) {
+    if (!(typeof b.title === "string" && bannerTitleOk(b.title))) fail(`${at}.title: 1–200 знаков`);
+    if (!Array.isArray(b.featured) || b.featured.length > FEATURED_MAX || !b.featured.every((f) => typeof f === "string" && featuredNameOk(f))) {
       fail(`${at}.featured: до 10 имён по 80 знаков`);
     }
     if (b.rarity !== null && !(isInt(b.rarity) && b.rarity >= 1 && b.rarity <= 6)) fail(`${at}.rarity: 1–6 или null`);

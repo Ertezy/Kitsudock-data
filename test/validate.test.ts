@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { validateHub } from "../src/validate.ts";
+import { bannerTitleOk, codeOk, featuredNameOk, validateHub } from "../src/validate.ts";
 import type { HubData } from "../src/types.ts";
 
 const good = (): HubData => ({
@@ -109,4 +109,32 @@ test("фон игры: необязателен, картинка и видео 
   const errors = validateHub(hub);
   assert.ok(errors.some((e) => e.startsWith("games[0].background.image")));
   assert.ok(errors.some((e) => e.startsWith("games[0].background.video")));
+});
+
+test("общие проверки записей: название баннера, имя персонажа, код", () => {
+  assert.equal(bannerTitleOk("x"), true);
+  assert.equal(bannerTitleOk("x".repeat(200)), true);
+  assert.equal(bannerTitleOk(""), false);
+  assert.equal(bannerTitleOk("   "), false, "из одних пробелов — пусто");
+  assert.equal(bannerTitleOk("x".repeat(201)), false);
+  assert.equal(featuredNameOk("x"), true);
+  assert.equal(featuredNameOk("x".repeat(80)), true);
+  assert.equal(featuredNameOk(""), false);
+  assert.equal(featuredNameOk(" "), false);
+  assert.equal(featuredNameOk("x".repeat(81)), false);
+  assert.equal(codeOk("ABCD"), true);
+  assert.equal(codeOk("a1".repeat(20)), true);
+  assert.equal(codeOk("ABC"), false);
+  assert.equal(codeOk("a1".repeat(20) + "z"), false);
+  assert.equal(codeOk("AB CD"), false);
+  assert.equal(codeOk(""), false);
+});
+
+test("validateHub пользуется теми же проверками: пустое название и пустое имя не проходят", () => {
+  const hub = good();
+  hub.banners[0]!.title = "  ";
+  hub.banners[0]!.featured = [""];
+  const errors = validateHub(hub);
+  assert.ok(errors.some((e) => e.startsWith("banners[0].title")));
+  assert.ok(errors.some((e) => e.startsWith("banners[0].featured")));
 });

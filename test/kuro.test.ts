@@ -259,6 +259,12 @@ test("баннер из факта: закончившийся, с концом 
   assert.deepEqual(kuroBanners([], {}, NOW), []);
 });
 
+test("баннер из факта: пустое название — баннера нет, пустое имя — баннер без имени", () => {
+  const facts = (list: KuroBannerFact[]) => [{ announcement: announcement(9001, PUBLISHED), banners: list }];
+  assert.deepEqual(kuroBanners(facts([{ ...AT_FACT, title: "  " }]), {}, NOW), [], "пустое название не пропустила бы проверка файла");
+  assert.deepEqual(kuroBanners(facts([{ ...AT_FACT, featured: " " }]), {}, NOW).map((b) => b.featured), [[]]);
+});
+
 const wuwa = (title: string, startsAt: number, extra: Partial<Banner> = {}): Banner => ({
   gameId: "wuthering",
   title,

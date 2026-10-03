@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { isLive, judge } from "../src/items.ts";
 import type { Banner, Code } from "../src/types.ts";
+import { MAX_CODES_PER_GAME } from "../src/validate.ts";
 
 const code: Code = { gameId: "hsr", code: "ABCD1234", rewards: "", expiresAt: null, region: "all", source: null };
 
@@ -33,4 +34,19 @@ test("сгоревшее", () => {
   assert.equal(isLive("codes", { ...code, expiresAt: 50 }, 50), false);
   assert.equal(isLive("banners", banner, 99), true);
   assert.equal(isLive("banners", banner, 100), false);
+});
+
+test("кодов не больше предела — норма, больше — поломка источника", () => {
+  const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...code, code: `CODE${String(i).padStart(4, "0")}` }));
+  assert.equal(MAX_CODES_PER_GAME, 200);
+  assert.equal(judge("codes", true, many(MAX_CODES_PER_GAME), MAX_CODES_PER_GAME, 0).kind, "ok");
+  const flood = judge("codes", true, many(MAX_CODES_PER_GAME + 1), MAX_CODES_PER_GAME + 1, 0);
+  assert.equal(flood.kind, "broken");
+  assert.match(flood.kind === "broken" ? flood.error : "", /201/);
+});
+
+test("предел кодов — только для кодов: баннеры им не ограничены", () => {
+  const banner: Banner = { gameId: "hsr", title: "T", featured: [], rarity: 5, image: null, startsAt: 10, endsAt: 100, url: null };
+  const banners = Array.from({ length: MAX_CODES_PER_GAME + 1 }, () => banner);
+  assert.equal(judge("banners", true, banners, banners.length, 0).kind, "ok");
 });

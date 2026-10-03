@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Http, HttpResponse } from "../src/http.ts";
 import { fandom } from "../src/mediawiki.ts";
-import { GAME_IDS } from "../src/types.ts";
+import { mergeHub, sectionKey } from "../src/merge.ts";
+import { GAME_IDS, type HubData, type HubGame, type Item, type SourceRun } from "../src/types.ts";
 import { bannerStarts, parseOverrides } from "../src/overrides.ts";
 import { KURO_MENU_URL, kuroArticleJsonUrl, kuroArticleUrl, kuroBanners, unreadableAnnouncement, type KuroBannerFact } from "../src/sources/kuro.ts";
 import { KURO_SIGNAL, SOURCES, emptyMemory, fetchKuroAnnouncements, kuroFactsFromMemory } from "../src/sources/registry.ts";
@@ -649,4 +650,58 @@ test("анонсы Kuro: вписанный в overrides.json баннер га�
   assert.equal(signal(overrides("2026-10-01 10:00 UTC+1")), null, "начало вписанного баннера позже выхода анонса");
   assert.equal(signal(overrides("2026-09-13 04:15 UTC+1")), null, "ровно за 2 суток до выхода");
   assert.equal(signal(overrides("2026-09-13 04:14 UTC+1")), 9001, "минутой раньше — это уже другой баннер");
+});
+
+// Поток записей одной игры: больше MAX_CODES_PER_GAME считается поломкой источника, а не новыми данными.
+const redemptionRow = (code: string) => `{{Redemption Code Row|${code}|ref=|A|{{Item List|Credit*1|mode=br}}|2026-08-01|unknown}}`;
+const codeName = (i: number) => `CODE${String(i).padStart(4, "0")}`;
+const codesPage = (count: number) => Array.from({ length: count }, (_, i) => redemptionRow(codeName(i))).join("\n");
+const hsrCodesWiki = (page: string) =>
+  fakeHttp([
+    (u) => (u.searchParams.get("prop") === "info" ? json({ query: { pages: [{ title: "Redemption Code", lastrevid: 5 }] } }) : undefined),
+    (u) => (u.searchParams.get("action") === "parse" ? json({ parse: { wikitext: page } }) : undefined),
+  ]);
+
+test("коды с фандома: ровно предел — норма", async () => {
+  const memory = emptyMemory();
+  const run = await byId("hsr-codes").run({ http: hsrCodesWiki(codesPage(200)).http, now: NOW, memory });
+  assert.equal(run.kind, "ok");
+  if (run.kind === "ok") assert.equal(run.items.length, 200);
+  assert.equal(Object.keys(memory.revisions).length, 1, "номер правки запомнен");
+});
+
+test("коды с фандома: 201 код — источник сломан, номер правки не запоминается, прошлые коды остаются", async () => {
+  const memory = emptyMemory();
+  const run = await byId("hsr-codes").run({ http: hsrCodesWiki(codesPage(201)).http, now: NOW, memory });
+  assert.equal(run.kind, "broken");
+  assert.deepEqual(memory.revisions, {}, "страница перечитается на следующем прогоне");
+
+  const catalog: HubGame[] = [{ id: "hsr", title: "Honkai: Star Rail", match: { steamAppIds: [], epicAppNames: [], folderNames: [] } }];
+  const previous: HubData = {
+    version: 2,
+    updatedAt: NOW - 3600,
+    games: catalog,
+    codes: [{ gameId: "hsr", code: "OLDCODE1", rewards: "", expiresAt: null, region: "all", source: null }],
+    banners: [],
+    videos: [],
+  };
+  const runs = new Map<string, SourceRun<Item>>([[sectionKey("hsr", "codes"), run]]);
+  const hub = mergeHub({ previous, catalog, runs, now: NOW });
+  assert.deepEqual(hub.codes.map((c) => c.code), ["OLDCODE1"]);
+});
+
+test("коды с фандома: предел считается по кодам, а не по строкам — одна строка с 201 кодом ломает источник", async () => {
+  const group = Array.from({ length: 201 }, (_, i) => codeName(i)).join(";");
+  const run = await byId("hsr-codes").run({ http: hsrCodesWiki(redemptionRow(group)).http, now: NOW, memory: emptyMemory() });
+  assert.equal(run.kind, "broken");
+});
+
+test("коды ennead.cc: 200 — норма, 201 — источник сломан", async () => {
+  const feed = (count: number) => ({ active: Array.from({ length: count }, (_, i) => ({ code: codeName(i), rewards: ["Credit ×1"] })) });
+  const at = (count: number) => fakeHttp([(u) => (u.host === "api.ennead.cc" ? json(feed(count)) : undefined)]).http;
+  const source = byId("hsr-codes-ennead");
+  assert.equal((await source.run({ http: at(200), now: NOW, memory: emptyMemory() })).kind, "ok");
+  const memory = emptyMemory();
+  assert.equal((await source.run({ http: at(201), now: NOW, memory })).kind, "broken");
+  assert.deepEqual(memory.validators, {}, "метки ответа не запомнены — запрос повторится безусловным");
 });

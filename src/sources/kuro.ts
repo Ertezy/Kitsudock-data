@@ -312,7 +312,7 @@ export function kuroBanners(facts: AnnouncementFacts[], releases: Record<string,
   for (const { announcement, banners: list } of facts) {
     for (const fact of list) {
       const startsAt = fact.start.kind === "at" ? fact.start.at : (releases[fact.start.version] ?? announcement.publishedAt);
-      const featured = fact.featured ? [fact.featured] : [];
+      const featured = fact.featured.trim() === "" ? [] : [fact.featured];
       if (fact.endsAt <= now || fact.endsAt <= startsAt || !bannerFits(fact.title, featured)) continue;
       banners.push({
         gameId: "wuthering",

@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BANNER_PAGES, parseBannerPage, parseEndfieldTable, parseEnneadBanners, recentBannerPages } from "../src/sources/banners.ts";
 import { ENNEAD_SOURCE } from "../src/sources/codes.ts";
+import type { Banner, GameId, HubData } from "../src/types.ts";
+import { validateHub } from "../src/validate.ts";
 import { runBounded } from "./bounded.ts";
 
 const utc = (y: number, mo: number, d: number, h: number, mi: number, s = 0) =>
@@ -270,4 +272,64 @@ test("Endfield: 30 000 «[[File:» без «|» после годной стро
   const r = await runBounded<EndfieldResult>("../src/sources/banners.ts", "parseEndfieldTable", [valid + "[[File:".repeat(30_000), ENDFIELD_URL]);
   assert.equal(r.drafts.length, 1);
   assert.equal(r.drafts[0]!.imageFile, null);
+});
+
+// Запись, которую приложение не примет, не должна закрывать выкладку всего файла: парсер выбрасывает её сам.
+function hubWith(banners: Banner[]): HubData {
+  const ids = [...new Set(banners.map((b) => b.gameId))] as GameId[];
+  return {
+    version: 2,
+    updatedAt: 1_788_000_000,
+    games: ids.map((id) => ({ id, title: id, match: { steamAppIds: [], epicAppNames: [], folderNames: [] } })),
+    codes: [],
+    banners,
+    videos: [],
+  };
+}
+
+test("Fandom: подстраница без названия (/a/2099-01-01) выбрасывается, а файл проходит проверку", () => {
+  const bad = parseBannerPage(HSR_PAGE, BANNER_PAGES.hsr, "/a/2099-01-01", "https://hsr/bad");
+  assert.equal(bad.kind, "bad");
+  const blank = parseBannerPage(HSR_PAGE, BANNER_PAGES.hsr, "  /2099-01-01", "https://hsr/bad");
+  assert.equal(blank.kind, "bad", "название из одних пробелов — тоже пустое");
+  const good = parseBannerPage(HSR_PAGE, BANNER_PAGES.hsr, "Over the Gilded Tides/2026-09-12", "https://hsr/page");
+  const banners = [bad, blank, good].flatMap((o) => (o.kind === "banner" ? [o.draft.banner] : []));
+  assert.equal(banners.length, 1);
+  assert.deepEqual(validateHub(hubWith(banners)), []);
+});
+
+test("Endfield: заголовок «&nbsp;» — строка выброшена и посчитана, файл проходит проверку", () => {
+  const goodRow = ENDFIELD.split('<tr valign="top">')[1]!;
+  const blankRow = goodRow.replace(">Winter Hunt</div>", ">&nbsp;</div>");
+  assert.notEqual(blankRow, goodRow);
+  const r = parseEndfieldTable(`<table><tr valign="top">${goodRow}<tr valign="top">${blankRow}</table>`, ENDFIELD_URL);
+  assert.equal(r.parsed, 2);
+  assert.equal(r.dropped, 1);
+  assert.deepEqual(r.drafts.map((d) => d.banner.title), ["Winter Hunt"]);
+  assert.deepEqual(validateHub(hubWith(r.drafts.map((d) => d.banner))), []);
+});
+
+test("Endfield: «[[ ]]» после «Limited operators:» — баннер остаётся без имени, пустого имени нет", () => {
+  const row = ENDFIELD.replace("<ul><li><span", "</span>[[ ]]<ul><li><span");
+  assert.notEqual(row, ENDFIELD);
+  const r = parseEndfieldTable(row, ENDFIELD_URL);
+  assert.equal(r.drafts.length, 1);
+  assert.deepEqual(r.drafts[0]!.banner.featured, []);
+  assert.deepEqual(validateHub(hubWith(r.drafts.map((d) => d.banner))), []);
+});
+
+test("ennead.cc: пустое имя персонажа — баннер выброшен и посчитан, файл проходит проверку", () => {
+  const r = parseEnneadBanners(
+    {
+      banners: [
+        { characters: [{ name: "  ", rarity: 5 }], start_time: 1788256800, end_time: 1790060399 },
+        { characters: [{ name: "Flins", rarity: 5 }], start_time: 1788256800, end_time: 1790060399 },
+      ],
+    },
+    "genshin",
+  );
+  assert.equal(r.parsed, 2);
+  assert.equal(r.dropped, 1);
+  assert.deepEqual(r.banners.map((b) => b.featured), [["Flins"]]);
+  assert.deepEqual(validateHub(hubWith(r.banners)), []);
 });
