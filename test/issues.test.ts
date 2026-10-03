@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanErrorText, createGitHub, formatTime, keyOf, planIssues, withKey, type IssueInputs } from "../src/issues.ts";
+import { applyIssueActions, cleanErrorText, createGitHub, formatTime, keyOf, planIssues, withKey, type GitHub, type IssueAction, type IssueInputs } from "../src/issues.ts";
 
 const utc = (y: number, mo: number, d: number, h: number, mi: number) => Date.UTC(y, mo - 1, d, h, mi) / 1000;
 const NOW = utc(2026, 9, 16, 14, 17);
@@ -363,4 +363,39 @@ test("клиент GitHub: у каждого запроса есть сигна�
     new Promise((_, reject) => init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason)))) as typeof fetch;
   const slow = createGitHub({ token: "t", repo: "Ertezy/Kitsudock-data", fetch: hanging, timeoutMs: 20 });
   await assert.rejects(slow.listOpen(), (error: Error) => error.name === "TimeoutError");
+});
+
+// Шаг задач останавливается на сроке прогона плюс запас: остаток сверит следующий прогон.
+
+function recordingGitHub() {
+  const calls: string[] = [];
+  const github: GitHub = {
+    async listOpen() { return []; },
+    async open(title) { calls.push(`open ${title}`); },
+    async update(number) { calls.push(`update ${number}`); },
+    async close(number) { calls.push(`close ${number}`); },
+    async lastHumanCommitAt() { return null; },
+  };
+  return { github, calls };
+}
+
+const someActions: IssueAction[] = [
+  { type: "open", key: "k", title: "Первая", body: "b" },
+  { type: "update", number: 7, body: "b" },
+  { type: "close", number: 9, comment: "c" },
+];
+
+test("шаг задач: без ограничения по времени применяются все действия, как раньше", async () => {
+  const r = recordingGitHub();
+  assert.equal(await applyIssueActions(r.github, someActions), 3);
+  assert.deepEqual(r.calls, ["open Первая", "update 7", "close 9"]);
+});
+
+test("шаг задач: когда время вышло, следующее действие не начинается, а применённое число возвращается", async () => {
+  const r = recordingGitHub();
+  assert.equal(await applyIssueActions(r.github, someActions, () => r.calls.length >= 1), 1);
+  assert.deepEqual(r.calls, ["open Первая"]);
+  const none = recordingGitHub();
+  assert.equal(await applyIssueActions(none.github, someActions, () => true), 0);
+  assert.deepEqual(none.calls, []);
 });

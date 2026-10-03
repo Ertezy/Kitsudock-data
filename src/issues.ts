@@ -258,10 +258,18 @@ export function createGitHub(options: { token: string; repo: string; fetch?: typ
   };
 }
 
-export async function applyIssueActions(github: GitHub, actions: IssueAction[]): Promise<void> {
+/**
+ * Применяет действия по порядку и возвращает, сколько применено. `timeIsUp` спрашивается перед каждым действием:
+ * вышло время — остальные не начинаются, их сверит следующий прогон (задачи живут на GitHub, а не локально).
+ */
+export async function applyIssueActions(github: GitHub, actions: IssueAction[], timeIsUp: () => boolean = () => false): Promise<number> {
+  let applied = 0;
   for (const action of actions) {
+    if (timeIsUp()) break;
     if (action.type === "open") await github.open(action.title, action.body);
     else if (action.type === "update") await github.update(action.number, action.body);
     else await github.close(action.number, action.comment);
+    applied++;
   }
+  return applied;
 }

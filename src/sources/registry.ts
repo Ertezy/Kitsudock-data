@@ -1,5 +1,6 @@
 // Какие источники есть, как часто их спрашивать и как из ответа получить записи.
 
+import { OUT_OF_TIME, timeIsUp } from "../deadline.ts";
 import { isTransportError, type Http, type Validators } from "../http.ts";
 import { isLive, judge } from "../items.ts";
 import { ENDFIELD_WIKI, categoryMembers, expandTemplates, fandom, lastRevisions, pageWikitext, thumbnails, type Wiki } from "../mediawiki.ts";
@@ -69,6 +70,8 @@ export interface SourceContext {
   memory: SourceMemory;
   /** Монотонные часы в миллисекундах для бюджетов времени; по умолчанию performance.now (в тестах подставляются свои). */
   clock?: () => number;
+  /** Срок прогона по тем же часам (RUN_BUDGET_MS от старта процесса): после него новые запросы не начинаются. Нет — срока нет. */
+  deadline?: number;
 }
 
 export interface SourceDef {
@@ -80,6 +83,11 @@ export interface SourceDef {
   label: string;
   everyHours: number;
   fallback: boolean;
+  /**
+   * Источники одной ленты — с общим хостом: запросы к нему всё равно встают в очередь (http.ts). Они идут один за
+   * другим, и между ними видно, что срок вышел или сайт не отвечает, — остаток пропускается. Без ленты источник идёт сам по себе.
+   */
+  lane?: string;
   run(ctx: SourceContext): Promise<SourceRun<Item>>;
 }
 
@@ -93,14 +101,18 @@ const TITLES: Record<GameId, string> = {
 
 const ENNEAD_SLUGS: Record<"genshin" | "hsr" | "zzz", string> = { genshin: "genshin", hsr: "starrail", zzz: "zenless" };
 
-/** Любое исключение внутри источника превращается в его поломку. */
+/** Любое исключение внутри источника превращается в его поломку; у сбоя связи (isTransportError) она с пометкой. */
 async function guarded(run: () => Promise<SourceRun<Item>>): Promise<SourceRun<Item>> {
   try {
     return await run();
   } catch (error) {
-    return { kind: "broken", error: (error as Error).message };
+    const message = (error as Error).message;
+    return isTransportError(error) ? { kind: "broken", error: message, transport: true } : { kind: "broken", error: message };
   }
 }
+
+/** Не хватило времени прогона: источник пропущен, прошлые данные остаются, поломкой это не считается. */
+const outOfTime = (): SourceRun<Item> => ({ kind: "skipped", reason: OUT_OF_TIME });
 
 /**
  * Коды, что попадут в файл: ещё не сгоревшие (сгоревшие mergeHub всё равно выбросит). Предел
@@ -148,6 +160,7 @@ function ennead(game: "genshin" | "hsr" | "zzz", section: "codes" | "banners"): 
     label: `${section === "codes" ? "коды" : "баннеры"} ${TITLES[game]} (ennead.cc)`,
     everyHours: section === "codes" ? 1 : 6,
     fallback: true,
+    lane: "ennead",
     run: (ctx) =>
       guarded(async () => {
         const res = await conditional(ctx, url);
@@ -184,12 +197,17 @@ export function newestLive<T>(items: T[], bannerOf: (item: T) => Banner, now: nu
 
 const publishable = (drafts: BannerDraft[], now: number): BannerDraft[] => newestLive(drafts, (d) => d.banner, now);
 
-async function withThumbnails(http: Http, wiki: Wiki, drafts: BannerDraft[]): Promise<Banner[]> {
+/**
+ * Баннеры с миниатюрами. null — миниатюры нужны, а срок прогона вышел: источник пропускается и оставляет прошлые
+ * баннеры вместе с их картинками, а не заменяет их баннерами без картинок.
+ */
+async function withThumbnails(ctx: SourceContext, wiki: Wiki, drafts: BannerDraft[]): Promise<Banner[] | null> {
   const files = drafts.flatMap((d) => (d.imageFile ? [d.imageFile] : []));
   let thumbs = new Map<string, string>();
   if (files.length > 0) {
+    if (timeIsUp(ctx)) return null;
     try {
-      thumbs = await thumbnails(http, wiki, files);
+      thumbs = await thumbnails(ctx.http, wiki, files);
     } catch {
       // Без миниатюр баннеры остаются с градиентом в приложении; источник не ломается.
     }
@@ -205,8 +223,9 @@ function fandomBanners(spec: BannerPageSpec): SourceDef {
     label: `баннеры ${TITLES[spec.gameId]} (фандом)`,
     everyHours: 6,
     fallback: false,
-    run: ({ http, now, memory }) =>
+    run: (ctx) =>
       guarded(async () => {
+        const { http, now, memory } = ctx;
         const wiki = fandom(spec.wiki);
         const titles = recentBannerPages(await categoryMembers(http, wiki, spec.category, MAX_BANNERS_PER_GAME), now);
         const revs = titles.length > 0 ? await lastRevisions(http, wiki, titles) : new Map<string, number>();
@@ -221,6 +240,8 @@ function fandomBanners(spec: BannerPageSpec): SourceDef {
           current.add(key);
           let outcome = memory.pages[key]?.rev === rev ? memory.pages[key]!.outcome : undefined;
           if (outcome === undefined) {
+            // Срок вышел — страницы не дочитываются: уже разобранные лежат в памяти, остальные дочитает следующий прогон.
+            if (timeIsUp(ctx)) return outOfTime();
             outcome = parseBannerPage(await pageWikitext(http, wiki, title), spec, title, wiki.pageUrl(title));
             // Сломанная страница не запоминается — её нужно перечитать в следующий раз,
             // когда шаблон поправят; удачный разбор (баннер или сознательный skip) кешируется.
@@ -237,7 +258,8 @@ function fandomBanners(spec: BannerPageSpec): SourceDef {
         for (const key of Object.keys(memory.pages)) {
           if (key.startsWith(`${wiki.api}|`) && !current.has(key)) delete memory.pages[key];
         }
-        return judge("banners", true, await withThumbnails(http, wiki, publishable(drafts, now)), parsed, dropped);
+        const banners = await withThumbnails(ctx, wiki, publishable(drafts, now));
+        return banners === null ? outOfTime() : judge("banners", true, banners, parsed, dropped);
       }),
   };
 }
@@ -249,11 +271,13 @@ const endfieldBanners: SourceDef = {
   label: "баннеры Arknights: Endfield (wiki.gg)",
   everyHours: 6,
   fallback: false,
-  run: ({ http, now }) =>
+  run: (ctx) =>
     guarded(async () => {
+      const { http, now } = ctx;
       const text = await expandTemplates(http, ENDFIELD_WIKI, "{{Banner table|current}}\n{{Banner table|upcoming}}");
       const r = parseEndfieldTable(text, ENDFIELD_WIKI.pageUrl("Headhunting/Banners"));
-      return judge("banners", true, await withThumbnails(http, ENDFIELD_WIKI, publishable(r.drafts, now)), r.parsed, r.dropped);
+      const banners = await withThumbnails(ctx, ENDFIELD_WIKI, publishable(r.drafts, now));
+      return banners === null ? outOfTime() : judge("banners", true, banners, r.parsed, r.dropped);
     }),
 };
 
@@ -270,6 +294,7 @@ function youtube(game: GameId, lang: VideoLang): SourceDef {
     label: `видео ${TITLES[game]} (YouTube, ${LANG_LABELS[lang]})`,
     everyHours: 1,
     fallback: false,
+    lane: "youtube",
     run: (ctx) =>
       guarded(async () => {
         const res = await conditional(ctx, url);
@@ -347,8 +372,8 @@ export async function fetchKuroAnnouncements(
  * Меню может отдать сколько угодно статей, а читается за прогон не больше MAX_KURO_ARTICLES_PER_RUN самых
  * новых; остальные — не ошибка: их прочтёт следующий прогон, когда новее них станет меньше, или они устареют.
  * Время тоже ограничено: сбой связи (таймаут, обрыв) обрывает чтение — сайт не отвечает, остальным статьям
- * не лучше, — и вышедший бюджет KURO_ARTICLES_BUDGET_MS обрывает его так же. Без этого тридцать статей
- * по 45 секунд (таймаут и повтор) не укладывались бы в лимит прогона, и состояние не сохранялось бы.
+ * не лучше, — и вышедший бюджет KURO_ARTICLES_BUDGET_MS или срок всего прогона (ctx.deadline) обрывает его так же.
+ * Без этого тридцать статей по 45 секунд (таймаут и повтор) не укладывались бы в лимит прогона, и состояние не сохранялось бы.
  * Ответ с кодом (404 и подобные) и не JSON — про одну статью: чтение идёт дальше.
  */
 async function readKuroArticles(ctx: SourceContext, announcements: Announcement[], patchNotes: PatchNotes[]): Promise<string[]> {
@@ -376,7 +401,7 @@ async function readKuroArticles(ctx: SourceContext, announcements: Announcement[
   const clock = ctx.clock ?? (() => performance.now());
   const started = clock();
   for (const id of ids) {
-    if (clock() - started >= KURO_ARTICLES_BUDGET_MS) {
+    if (clock() - started >= KURO_ARTICLES_BUDGET_MS || timeIsUp(ctx)) {
       warnings.push("чтение статей Kuro остановлено: вышло время, остальные — в следующий прогон");
       break;
     }

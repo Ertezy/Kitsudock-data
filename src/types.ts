@@ -79,9 +79,13 @@ export interface HubData {
 
 export type Item = Code | Banner | Video;
 
-/** Итог одного источника за запуск. */
+/**
+ * Итог одного источника за запуск. `skipped` — источник не спрашивали (час не настал или не хватило
+ * времени прогона, тогда в `reason` причина): прошлые данные остаются, неудачей это не считается.
+ * `broken` с `transport` — сбой связи, а не ответа (таймаут, обрыв): сайт не отвечает.
+ */
 export type SourceRun<T extends Item> =
   | { kind: "ok"; items: T[]; parsed: number; dropped: number }
   | { kind: "unchanged" }
-  | { kind: "skipped" }
-  | { kind: "broken"; error: string };
+  | { kind: "skipped"; reason?: string }
+  | { kind: "broken"; error: string; transport?: true };

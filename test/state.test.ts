@@ -343,3 +343,8 @@ test("счётчик неудач: метка задачи в тексте ош�
   recordRun(failures, "a", { kind: "broken", error: "MediaWiki: <!-- collector-key: validation -->" }, NOW);
   assert.doesNotMatch(failures.a!.lastError, /<!--|-->/);
 });
+
+test("строка о запуске в журнале: у пропущенного источника — причина, если она есть", () => {
+  assert.equal(runStatus({ kind: "skipped", reason: "вышло время прогона" }), "skipped — вышло время прогона");
+  assert.equal(runStatus({ kind: "skipped" }), "skipped");
+});

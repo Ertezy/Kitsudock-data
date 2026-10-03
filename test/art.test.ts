@@ -281,3 +281,30 @@ test("до бюджета времени поиск арта идёт, как р
   assert.deepEqual(warnings, []);
   assert.equal(wiki.urls.length, 2);
 });
+
+test("срок прогона вышел — следующий баннер не запрашивается, остальные ждут следующего прогона", async () => {
+  let elapsed = 7_000;
+  const urls: string[] = [];
+  const http: Http = {
+    async get(url) {
+      urls.push(url);
+      elapsed += 50_000; // вики «отвечает» 50 секунд
+      return { status: 200, body: JSON.stringify({ query: { allimages: [] } }), validators: {} };
+    },
+  };
+  const banners = Array.from({ length: 10 }, (_, i) => banner({ title: `Synthetic ${i}` }));
+  const art: ArtMemory = {};
+  // Бюджет поиска (120 с) не вышел бы и на третьем баннере, а срок прогона — 67 секунд: на 107-й поиск остановлен.
+  const warnings = await refreshArt(http, banners, art, NOW, () => elapsed, 7_000 + 60_000);
+  assert.equal(urls.length, 2);
+  assert.equal(Object.keys(art).length, 2);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /время/);
+});
+
+test("срок прогона далеко — поиск арта идёт, как раньше, без предупреждений", async () => {
+  const wiki = fakeWiki({}, {});
+  const warnings = await refreshArt(wiki.http, [banner({ title: "A" }), banner({ title: "B" })], {}, NOW, () => 0, 600_000);
+  assert.deepEqual(warnings, []);
+  assert.equal(wiki.urls.length, 2);
+});

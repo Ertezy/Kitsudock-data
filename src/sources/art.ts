@@ -7,6 +7,7 @@
 // арт с этим названием с фандома своей игры. Ссылка, как и у остальных картинок, —
 // на копию у фандома; сами картинки нигде не хранятся.
 
+import { timeIsUp } from "../deadline.ts";
 import { isTransportError, type Http } from "../http.ts";
 import { fandom, filesWithPrefix, thumbnails, type WikiFile } from "../mediawiki.ts";
 import { isDue } from "../state.ts";
@@ -76,8 +77,8 @@ const wantsArt = (banner: Banner) => banner.image === null && banner.url !== ENN
  * повтор на тот же срок и возвращается предупреждением: прогон из-за картинки не падает.
  * За прогон проверяется не больше MAX_ART_LOOKUPS_PER_RUN баннеров (остальные — в следующий
  * прогон), сбой связи (таймаут, обрыв) обрывает поиск: вики не отвечает, остальным баннерам
- * не лучше, — и вышедший бюджет ART_BUDGET_MS обрывает его так же. `clock` — монотонные часы в
- * миллисекундах (в тестах подставляются свои).
+ * не лучше, — и вышедший бюджет ART_BUDGET_MS или срок всего прогона `deadline` обрывает его так же. `clock` —
+ * монотонные часы в миллисекундах (в тестах подставляются свои), `deadline` — срок прогона по этим же часам.
  */
 export async function refreshArt(
   http: Http,
@@ -85,6 +86,7 @@ export async function refreshArt(
   art: ArtMemory,
   now: number,
   clock: () => number = () => performance.now(),
+  deadline?: number,
 ): Promise<string[]> {
   const warnings: string[] = [];
   const started = clock();
@@ -100,7 +102,7 @@ export async function refreshArt(
       continue;
     }
     if (lookups >= MAX_ART_LOOKUPS_PER_RUN) break; // остальных проверит следующий прогон
-    if (clock() - started >= ART_BUDGET_MS) {
+    if (clock() - started >= ART_BUDGET_MS || timeIsUp({ clock, deadline })) {
       warnings.push("поиск арта остановлен: вышло время, остальные баннеры — в следующий прогон");
       break;
     }

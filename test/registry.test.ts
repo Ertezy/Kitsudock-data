@@ -7,7 +7,7 @@ import { GAME_IDS, type HubData, type HubGame, type Item, type SourceRun } from 
 import { bannerStarts, parseOverrides } from "../src/overrides.ts";
 import { KURO_MENU_URL, kuroArticleJsonUrl, kuroArticleUrl, kuroBanners, unreadableAnnouncement, type KuroBannerFact } from "../src/sources/kuro.ts";
 import { KURO_SIGNAL, SOURCES, emptyMemory, fetchKuroAnnouncements, kuroBannersFromMemory, kuroFactsFromMemory } from "../src/sources/registry.ts";
-import { KURO_ARTICLES_BUDGET_MS, MAX_BANNERS_PER_GAME, MAX_KURO_ARTICLES_PER_RUN, MAX_KURO_BANNERS_PER_ARTICLE } from "../src/validate.ts";
+import { KURO_ARTICLES_BUDGET_MS, MAX_BANNERS_PER_GAME, MAX_KURO_ARTICLES_PER_RUN, MAX_KURO_BANNERS_PER_ARTICLE, RUN_BUDGET_MS } from "../src/validate.ts";
 
 type Route = (url: URL) => HttpResponse | undefined;
 
@@ -1014,4 +1014,141 @@ test("анонсы Kuro: до бюджета времени ничего не м
   const result = await fetchKuroAnnouncements({ http: k.http, now: NOW, memory: emptyMemory(), clock: () => 0 });
   assert.deepEqual(result.ok && result.warnings, []);
   assert.equal(k.site.seen.filter((r) => r.url.includes("/article/")).length, 2);
+});
+
+// Срок всего прогона (RUN_BUDGET_MS): источники не начинают новых запросов, когда он вышел, и оставляют прошлые данные.
+
+test("ленты: у YouTube и у запасного ennead.cc своя лента (общий хост), у остальных источников её нет", () => {
+  assert.ok(SOURCES.filter((s) => s.section === "videos").every((s) => s.lane === "youtube"));
+  assert.ok(SOURCES.filter((s) => s.fallback).every((s) => s.lane === "ennead"));
+  assert.ok(SOURCES.filter((s) => s.section !== "videos" && !s.fallback).every((s) => s.lane === undefined));
+});
+
+test("источник: сбой связи помечается в результате, остальные поломки — нет", async () => {
+  const source = byId("zzz-videos-en");
+  const failing = (error: Error): Http => ({ async get() { throw error; } });
+  const timedOut = await source.run({ http: failing(timeoutError()), now: NOW, memory: emptyMemory() });
+  assert.deepEqual(timedOut, { kind: "broken", error: "The operation was aborted due to timeout", transport: true });
+  const reset = await source.run({ http: failing(new TypeError("fetch failed")), now: NOW, memory: emptyMemory() });
+  assert.equal(reset.kind === "broken" && reset.transport, true);
+  const refused = await source.run({ http: failing(new StatusError(404, "https://example.test/")), now: NOW, memory: emptyMemory() });
+  assert.deepEqual(refused, { kind: "broken", error: "ответ 404: https://example.test/" }, "ответ с кодом — не сбой связи, поля нет");
+  const plain = await source.run({ http: failing(new Error("другое")), now: NOW, memory: emptyMemory() });
+  assert.deepEqual(plain, { kind: "broken", error: "другое" });
+});
+
+const BANNER_PAGE = (n: number) => `{{Convene
+|image = Banner ${n} 2026-09-1${n}.jpg
+|type = Featured Resonator
+|time_start = 2026-09-1${n} 10:00
+|time_end = 2026-09-29 11:59
+}}
+{{Convene/Pool
+|resonator_5_F = Hiyuki
+}}`;
+
+/** Фандом Wuthering Waves с тремя страницами баннеров; чтение страницы «занимает» parseMs на часах. */
+function wuwaWiki(clock: { at: number }, parseMs: number) {
+  const titles = [1, 2, 3].map((n) => `Banner ${n}/2026-09-1${n}`);
+  return fakeHttp([
+    (u) => (u.searchParams.get("list") === "categorymembers" ? json({ query: { categorymembers: titles.map((title) => ({ title })) } }) : undefined),
+    (u) => (u.searchParams.get("prop") === "info" ? json({ query: { pages: u.searchParams.get("titles")!.split("|").map((title, i) => ({ title, lastrevid: 10 + i })) } }) : undefined),
+    (u) => {
+      if (u.searchParams.get("action") !== "parse") return undefined;
+      clock.at += parseMs;
+      return json({ parse: { wikitext: BANNER_PAGE(Number(/Banner (\d)/.exec(u.searchParams.get("page")!)![1])) } });
+    },
+    (u) => (u.searchParams.get("prop") === "imageinfo" ? json({ query: { pages: [] } }) : undefined),
+  ]);
+}
+
+test("баннеры с фандома: срок прогона вышел между страницами — остальные не читаются, источник пропущен, прочитанное запомнено", async () => {
+  const clock = { at: 0 };
+  const f = wuwaWiki(clock, 400_000);
+  const memory = emptyMemory();
+  const ctx = { http: f.http, now: NOW, memory, clock: () => clock.at, deadline: 500_000 };
+  const run = await byId("wuthering-banners").run(ctx);
+  assert.equal(run.kind, "skipped");
+  assert.match(run.kind === "skipped" ? run.reason! : "", /время прогона/);
+  assert.equal(f.urls.filter((u) => u.includes("action=parse")).length, 2, "0 и 400 секунд — до срока; на 800-й третья страница не читается");
+  assert.equal(Object.keys(memory.pages).length, 2, "разобранные страницы запомнены");
+  assert.equal(f.urls.filter((u) => u.includes("prop=imageinfo")).length, 0, "без полного набора страниц миниатюры не нужны");
+  // Следующий прогон берёт две страницы из памяти и дочитывает третью.
+  clock.at = 0;
+  const next = await byId("wuthering-banners").run(ctx);
+  assert.equal(next.kind, "ok");
+  assert.equal(f.urls.filter((u) => u.includes("action=parse")).length, 3, "прочитана одна недостающая страница");
+  if (next.kind === "ok") assert.equal(next.items.length, 3);
+});
+
+test("баннеры с фандома: до срока всё идёт как раньше", async () => {
+  const clock = { at: 0 };
+  const f = wuwaWiki(clock, 1_000);
+  const run = await byId("wuthering-banners").run({ http: f.http, now: NOW, memory: emptyMemory(), clock: () => clock.at, deadline: RUN_BUDGET_MS });
+  assert.equal(run.kind, "ok");
+  assert.equal(f.urls.filter((u) => u.includes("action=parse")).length, 3);
+  assert.equal(f.urls.filter((u) => u.includes("prop=imageinfo")).length, 1);
+});
+
+test("баннеры с фандома: срок вышел после чтения страниц — миниатюры не запрашиваются, источник пропущен", async () => {
+  const clock = { at: 0 };
+  const f = wuwaWiki(clock, 300_000); // три страницы: 0, 300 и 600 секунд — при сроке 700 последняя ещё читается
+  const run = await byId("wuthering-banners").run({ http: f.http, now: NOW, memory: emptyMemory(), clock: () => clock.at, deadline: 700_000 });
+  assert.equal(run.kind, "skipped", "запрос миниатюр на 900-й секунде уже не начинается");
+  assert.equal(f.urls.filter((u) => u.includes("action=parse")).length, 3);
+  assert.equal(f.urls.filter((u) => u.includes("prop=imageinfo")).length, 0);
+});
+
+test("Endfield: срок вышел до запроса миниатюр — запрос не идёт, источник пропущен, до срока — как раньше", async () => {
+  const table = `<table>${efRow("Banner 1", Date.UTC(2030, 0, 1), Date.UTC(2030, 0, 20))}</table>`;
+  const clock = { at: 0 };
+  const f = endfieldWiki(table);
+  const http: Http = {
+    get(url, validators) {
+      if (url.includes("action=expandtemplates")) clock.at += 700_000;
+      return f.http.get(url, validators);
+    },
+  };
+  const late = await byId("endfield-banners").run({ http, now: NOW, memory: emptyMemory(), clock: () => clock.at, deadline: 600_000 });
+  assert.equal(late.kind, "skipped");
+  assert.equal(imageinfoCalls(f.urls).length, 0);
+  clock.at = 0;
+  const inTime = await byId("endfield-banners").run({ http: f.http, now: NOW, memory: emptyMemory(), clock: () => clock.at, deadline: RUN_BUDGET_MS });
+  assert.equal(inTime.kind, "ok");
+  assert.equal(imageinfoCalls(f.urls).length, 1);
+});
+
+test("анонсы Kuro: срок прогона вышел — следующая статья не запрашивается, остальные ждут следующего прогона", async () => {
+  const k = kuroSite();
+  const stamp = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+  const ids = Array.from({ length: 10 }, (_, i) => 20_000 + i);
+  k.site.menu = ids.map((articleId, i) => ({
+    articleId,
+    articleTitle: "[Version 9.9 Featured Resonator/Weapon Convene: Phase I]",
+    startTime: stamp(Date.UTC(2026, 8, 15, 23, 59) - i * 60_000),
+  }));
+  for (const id of ids) {
+    k.site.html[id] = ANNOUNCEMENT_HTML;
+    k.site.etags[id] = `"e${id}"`;
+  }
+  let elapsed = 0;
+  let step = 50_000; // каждая читаемая статья «отвечает» 50 секунд
+  const requested: string[] = [];
+  const http = withArticleHook(k, (url, etag) => {
+    requested.push(url);
+    if (etag === undefined) elapsed += step;
+  });
+  const memory = emptyMemory();
+  // Бюджет чтения статей (120 с) не вышел бы и на третьей статье, а срок прогона вышел: 0 и 50 секунд — до срока 60, на 100-й чтение остановлено.
+  const result = await fetchKuroAnnouncements({ http, now: NOW, memory, clock: () => elapsed, deadline: 60_000 });
+  assert.equal(result.ok, true);
+  assert.equal(requested.length, 2);
+  assert.deepEqual(Object.keys(memory.kuroFacts).sort(), ids.slice(0, 2).map(String).sort());
+  assert.ok(result.ok && result.warnings.length === 1 && /время/.test(result.warnings[0]!));
+  // Следующий прогон с новыми часами продолжает.
+  elapsed = 0;
+  step = 0;
+  const next = await fetchKuroAnnouncements({ http, now: NOW, memory, clock: () => elapsed, deadline: RUN_BUDGET_MS });
+  assert.deepEqual(next.ok && next.warnings, []);
+  assert.deepEqual(Object.keys(memory.kuroFacts).sort(), [...ids].map(String).sort());
 });

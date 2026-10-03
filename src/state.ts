@@ -130,8 +130,9 @@ export function recordRun(failures: Record<string, Failure>, sourceId: string, r
   };
 }
 
-/** Строка о запуске источника для журнала: у поломки — с чистым текстом ошибки, у остальных — просто вид. */
-export const runStatus = (run: SourceRun<Item>): string => (run.kind === "broken" ? `сломан — ${cleanErrorText(run.error)}` : run.kind);
+/** Строка о запуске источника для журнала: у поломки — с чистым текстом ошибки, у пропущенного — с причиной, если она есть, у остальных — просто вид. */
+export const runStatus = (run: SourceRun<Item>): string =>
+  run.kind === "broken" ? `сломан — ${cleanErrorText(run.error)}` : run.kind === "skipped" && run.reason ? `skipped — ${run.reason}` : run.kind;
 
 /** Убирает записи об источниках, которых больше нет (спека этапа 6 §3.1).
  *  Иначе старая неудача держала бы задачу о поломке открытой вечно: удалить

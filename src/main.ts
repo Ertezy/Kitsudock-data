@@ -1,32 +1,32 @@
 // Один запуск сборщика целиком (спека §3).
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { timeIsUp } from "./deadline.ts";
 import { createHttp, StatusError } from "./http.ts";
 import { applyIssueActions, cleanErrorText, createGitHub, planIssues } from "./issues.ts";
-import { mergeHub, sameData, sectionKey } from "./merge.ts";
+import { mergeHub, sameData } from "./merge.ts";
 import { applyOverrides, bannerStarts, parseOverrides, type Overrides } from "./overrides.ts";
+import { createRunner } from "./runner.ts";
 import { APP_RELEASE, fetchAppRelease } from "./sources/appRelease.ts";
 import { refreshArt, withArt } from "./sources/art.ts";
 import { unreadableAnnouncement, withKuroBanners } from "./sources/kuro.ts";
 import { LAUNCHER_ART, fetchLauncherArt, withLauncherArt } from "./sources/launcherArt.ts";
-import { KURO_SIGNAL, SOURCES, fetchKuroAnnouncements, kuroBannersFromMemory } from "./sources/registry.ts";
+import { KURO_SIGNAL, SOURCES, fetchKuroAnnouncements, kuroBannersFromMemory, type SourceContext } from "./sources/registry.ts";
 import {
   PAGES_URL,
   REPUBLISH_SECONDS,
   SLACK_SECONDS,
   baseFromPublished,
   emptyState,
-  isDue,
   loadState,
   looksLikeHub,
   missingPrevious,
   pruneState,
   recordRun,
-  runStatus,
   saveState,
 } from "./state.ts";
-import type { HubData, HubGame, Item, SourceRun } from "./types.ts";
-import { validateHub } from "./validate.ts";
+import type { HubData, HubGame } from "./types.ts";
+import { ISSUES_GRACE_MS, RUN_BUDGET_MS, validateHub } from "./validate.ts";
 
 const dryRun = process.argv.includes("--dry-run");
 const now = Math.floor(Date.now() / 1000);
@@ -87,44 +87,15 @@ const catalog = JSON.parse(readFileSync("catalog.json", "utf8")) as HubGame[];
 // на следующем прогоне, а не будут считаться «уже обработанными» (спека §3).
 const memory = structuredClone(state.memory);
 const lastRun: Record<string, number> = { ...state.lastRun };
-const ctx = { http, now, memory };
-const runs = new Map<string, SourceRun<Item>>();
+// Срок прогона: performance.now() идёт от старта процесса, поэтому срок — просто RUN_BUDGET_MS (см. deadline.ts).
+// После срока источники не начинают новых запросов и оставляют прошлые данные; сохранение, выкладка и задачи идут как обычно.
+const ctx: SourceContext = { http, now, memory, deadline: RUN_BUDGET_MS };
 const report: string[] = [];
+const runner = createRunner({ ctx, lastRun, failures: state.failures, now });
 
-await Promise.all(
-  SOURCES.filter((s) => !s.fallback).map(async (source) => {
-    const key = sectionKey(source.game, source.section, source.lang);
-    if (!isDue(lastRun[source.id], source.everyHours, now)) {
-      runs.set(key, { kind: "skipped" });
-      console.log(`${source.id}: skipped`);
-      return;
-    }
-    const run = await source.run(ctx);
-    lastRun[source.id] = now;
-    recordRun(state.failures, source.id, run, now);
-    runs.set(key, run);
-    console.log(`${source.id}: ${runStatus(run)}`);
-  }),
-);
+const runs = await runner.runSources(SOURCES);
 
-await Promise.all(
-  SOURCES.filter((s) => s.fallback).map(async (source) => {
-    const key = sectionKey(source.game, source.section, source.lang);
-    const mainKind = runs.get(key)?.kind;
-    if (mainKind !== "broken") {
-      // Основной источник пропущен в этом прогоне (не наступил час) — это не «он здоров»,
-      // счётчик неудач запасного трогать нельзя, как и recordRun сам не трогает skipped.
-      if (mainKind === "ok" || mainKind === "unchanged") delete state.failures[source.id];
-      return;
-    }
-    const run = await source.run(ctx);
-    recordRun(state.failures, source.id, run, now);
-    if (run.kind === "ok") runs.set(key, run);
-    console.log(`${source.id} (запасной): ${runStatus(run)}`);
-  }),
-);
-
-if (isDue(lastRun[KURO_SIGNAL.id], KURO_SIGNAL.everyHours, now)) {
+if (runner.shouldStart(KURO_SIGNAL.id, KURO_SIGNAL.everyHours)) {
   const result = await fetchKuroAnnouncements(ctx);
   lastRun[KURO_SIGNAL.id] = now;
   if (result.ok) {
@@ -137,7 +108,7 @@ if (isDue(lastRun[KURO_SIGNAL.id], KURO_SIGNAL.everyHours, now)) {
 }
 
 // Номер последней опубликованной версии приложения — для строки «Вышла версия» в панели.
-if (isDue(lastRun[APP_RELEASE.id], APP_RELEASE.everyHours, now)) {
+if (runner.shouldStart(APP_RELEASE.id, APP_RELEASE.everyHours)) {
   const result = await fetchAppRelease(http, memory, process.env.GITHUB_TOKEN);
   lastRun[APP_RELEASE.id] = now;
   if (result.ok) delete state.failures[APP_RELEASE.id];
@@ -145,7 +116,7 @@ if (isDue(lastRun[APP_RELEASE.id], APP_RELEASE.everyHours, now)) {
 }
 
 // Фоны официального лаунчера HoYoPlay — ссылки для фона игр в приложении.
-if (isDue(lastRun[LAUNCHER_ART.id], LAUNCHER_ART.everyHours, now)) {
+if (runner.shouldStart(LAUNCHER_ART.id, LAUNCHER_ART.everyHours)) {
   const result = await fetchLauncherArt(http, memory);
   lastRun[LAUNCHER_ART.id] = now;
   if (result.ok) delete state.failures[LAUNCHER_ART.id];
@@ -173,7 +144,7 @@ try {
 // Баннерам без картинки — арт прошлого запуска с фандома (sources/art.ts). После правок:
 // вписанный вручную баннер без картинки тоже его получает. Сбой вики прогон не роняет.
 const withOverrides = applyOverrides(withKuro, overrides, now);
-for (const warning of await refreshArt(http, withOverrides.banners, memory.bannerArt, now)) console.log(`арт баннеров: ${cleanErrorText(warning)}`);
+for (const warning of await refreshArt(http, withOverrides.banners, memory.bannerArt, now, ctx.clock, ctx.deadline)) console.log(`арт баннеров: ${cleanErrorText(warning)}`);
 const withBannerArt = withArt(withOverrides, memory.bannerArt);
 // Версия приложения — из памяти, как баннеры Kuro; в state.base не попадает.
 const withRelease: HubData = memory.appRelease ? { ...withBannerArt, app: memory.appRelease } : withBannerArt;
@@ -220,7 +191,12 @@ const runUrl = process.env.GITHUB_RUN_ID ? `${repoUrl}/actions/runs/${process.en
 // прогон не должен терять память и счётчики из-за сбоя одного лишь API задач.
 if (!dryRun) saveState(state);
 
-if (!dryRun && process.env.GITHUB_TOKEN) {
+// Шаг задач получает ещё ISSUES_GRACE_MS сверх срока прогона; не успел — остаток сверит следующий прогон.
+const issuesTimeIsUp = () => timeIsUp(ctx, ISSUES_GRACE_MS);
+
+if (!dryRun && process.env.GITHUB_TOKEN && issuesTimeIsUp()) {
+  report.push("задачи в GitHub не обновлялись: вышло время прогона, их сверит следующий прогон");
+} else if (!dryRun && process.env.GITHUB_TOKEN) {
   try {
     const github = createGitHub({ token: process.env.GITHUB_TOKEN, repo });
     const lastCommit = await github.lastHumanCommitAt();
@@ -236,8 +212,9 @@ if (!dryRun && process.env.GITHUB_TOKEN) {
       runUrl,
       repoUrl,
     });
-    await applyIssueActions(github, actions);
-    report.push(`задачи: ${actions.map((a) => a.type).join(", ") || "без изменений"}`);
+    const applied = await applyIssueActions(github, actions, issuesTimeIsUp);
+    report.push(`задачи: ${actions.slice(0, applied).map((a) => a.type).join(", ") || "без изменений"}`);
+    if (applied < actions.length) report.push(`задач не обновлено: ${actions.length - applied} — вышло время прогона, их сверит следующий прогон`);
   } catch (error) {
     // Задачи живут на GitHub, а не локально: следующий прогон сам сверится заново.
     // Но владелец должен узнать о сбое — процесс завершится с ошибкой.
