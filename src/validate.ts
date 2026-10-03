@@ -73,12 +73,15 @@ const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/i;
 /**
  * Простой публичный https-адрес: строка начинается с «https://», не длиннее URL_MAX,
  * без пробелов и управляющих знаков, без логина и порта (явного тоже: «:443» разбор прячет),
- * без сегментов пути «.» и «..», хост — имя с точкой, а не IPv4 и не IPv6. Разбор приводит
+ * без сегментов пути «.» и «..», хост — имя с точкой (сразу после «https://», без лишних «/»), а не IPv4 и не IPv6. Разбор приводит
  * «2130706433», «0x7f.1» и «127.1» к 127.0.0.1, поэтому IPv4 ищется в уже разобранном имени.
  */
 export function isPublicHttpsUrl(value: unknown): value is string {
   if (typeof value !== "string" || value.length > URL_MAX || !value.startsWith("https://")) return false;
   if (URL_FORBIDDEN.test(value)) return false;
+  // Хост стоит сразу после «https://». Начало с косой черты — пустое: разбор по WHATWG берёт
+  // хост из пути («https:///example.org/x» → example.org), а строгий читатель видит пустой.
+  if (value.startsWith("/", "https://".length)) return false;
   // Начало до первой «/», «?» или «#»: «@» и «:» здесь — логин или порт, в пути и запросе они обычны.
   const authority = value.slice("https://".length).split(/[/?#]/, 1)[0]!;
   if (authority.includes("@") || authority.includes(":")) return false;
