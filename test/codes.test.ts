@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ENNEAD_SOURCE, parseEnneadCodes, parseRowCodes, parseWuwaCodes } from "../src/sources/codes.ts";
+import { ENNEAD_SOURCE, parseEnneadCodes, parseRowCodes, parseWuwaCodes, type ParsedCodes } from "../src/sources/codes.ts";
+import { runBounded } from "./bounded.ts";
 
 const utc = (y: number, mo: number, d: number, h: number, mi: number, s = 0) =>
   Date.UTC(y, mo - 1, d, h, mi, s) / 1000;
@@ -173,24 +174,29 @@ test("Genshin: незакрытая [[ в награде не проглатыв
   assert.equal(r.codes[0]!.rewards, "Primogem*60 [[Broken link");
 });
 
-// Предел времени на порядки щедрее нормы: тест ловит возврат квадратичного или
-// откатывающегося разбора, а не ровность замеров.
-const TIME_LIMIT_MS = 500;
-
 test("Wuthering Waves: пробелы и табы вокруг || допустимы", () => {
   const page = "===Active===\n|<code>SPACED</code>  ||\tAll  || {{Card List|Astrite*50|delim=;}}\n|Discovered: May 1, 2026<br />'''Valid until: Unknown'''";
   const r = parseWuwaCodes(page, "https://x");
   assert.deepEqual(r.codes.map((c) => [c.code, c.rewards, c.expiresAt]), [["SPACED", "Astrite ×50", null]]);
 });
 
-test("Wuthering Waves: 100 000 пробелов после разделителя разбираются за линейное время", () => {
+test("Wuthering Waves: 100 000 пробелов после разделителя разбираются за линейное время", async () => {
   const page = `===Active===\n<code>AAAA</code> ||${" ".repeat(100_000)}`;
-  const started = performance.now();
-  const r = parseWuwaCodes(page, "https://x");
-  const ms = performance.now() - started;
+  const r = await runBounded<ParsedCodes>("../src/sources/codes.ts", "parseWuwaCodes", [page, "https://x"]);
   assert.equal(r.found, true);
   assert.equal(r.codes.length, 0);
-  assert.ok(ms < TIME_LIMIT_MS, `заняло ${ms.toFixed(0)} мс`);
+});
+
+test("Wuthering Waves: около 200 КБ строк без срока, с пустым сроком и без закрытой Card List — линейное время", async () => {
+  const hostile = {
+    "без срока": "<code>AAAA</code> || All || {{Card List|Astrite*50}}\n|-\n".repeat(4_000),
+    "срок без значения": "<code>AAAA</code> || All || {{Card List|Astrite*50}} Valid until:'''\n|-\n".repeat(3_000),
+    "Card List не закрыта": "<code>AAAA</code> || All || {{Card List|Astrite*50 \n|-\n".repeat(4_000),
+  };
+  for (const [what, rows] of Object.entries(hostile)) {
+    const r = await runBounded<ParsedCodes>("../src/sources/codes.ts", "parseWuwaCodes", [`===Active===\n${rows}`, "https://x"]);
+    assert.deepEqual([r.found, r.codes.length, r.parsed, r.dropped], [true, 0, 0, 0], what);
+  }
 });
 
 test("Genshin: незакрытая {{ выше строк (в том числе в nowiki) не обнуляет коды", () => {

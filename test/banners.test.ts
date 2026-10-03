@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BANNER_PAGES, parseBannerPage, parseEndfieldTable, parseEnneadBanners, recentBannerPages } from "../src/sources/banners.ts";
 import { ENNEAD_SOURCE } from "../src/sources/codes.ts";
+import { runBounded } from "./bounded.ts";
 
 const utc = (y: number, mo: number, d: number, h: number, mi: number, s = 0) =>
   Date.UTC(y, mo - 1, d, h, mi, s) / 1000;
@@ -199,9 +200,8 @@ test("ennead.cc: слишком длинное имя персонажа — б�
   assert.equal(r.dropped, 1);
 });
 
-// Предел времени на порядки щедрее нормы: тест ловит возврат квадратичного или
-// откатывающегося разбора, а не ровность замеров.
-const TIME_LIMIT_MS = 500;
+const ENDFIELD_URL = "https://endfield.wiki.gg/wiki/Headhunting/Banners";
+type EndfieldResult = ReturnType<typeof parseEndfieldTable>;
 
 test("Endfield: время с лишними пробелами вокруг &ndash; по-прежнему разбирается", () => {
   const row = ENDFIELD.replace("23:00 &ndash; Sep 30", "23:00 \t &ndash;\n  Sep 30").replace("11:59 <span", "11:59   <span");
@@ -211,24 +211,39 @@ test("Endfield: время с лишними пробелами вокруг &nd
   assert.equal(r.drafts[0]!.banner.endsAt, utc(2026, 9, 30, 16, 59));
 });
 
-test("Endfield: 20 000 пробелов по обе стороны от &ndash; без закрывающего span — линейное время, строка выброшена", () => {
+test("Endfield: 20 000 пробелов по обе стороны от &ndash; без закрывающего span — линейное время, строка выброшена", async () => {
   const pad = " ".repeat(20_000);
   const row = `<tr valign="top"><div class="header">Winter Hunt</div><b><abbr title="Americas / Europe">AM / EU</abbr>:</b> <span>${pad}&ndash;${pad}`;
-  const started = performance.now();
-  const r = parseEndfieldTable(row, "https://endfield.wiki.gg/wiki/Headhunting/Banners");
-  const ms = performance.now() - started;
+  const r = await runBounded<EndfieldResult>("../src/sources/banners.ts", "parseEndfieldTable", [row, ENDFIELD_URL]);
   assert.equal(r.parsed, 1);
   assert.equal(r.dropped, 1);
   assert.equal(r.drafts.length, 0);
-  assert.ok(ms < TIME_LIMIT_MS, `заняло ${ms.toFixed(0)} мс`);
 });
 
-test("Endfield: 40 000 «&ndash;» подряд без закрывающего span — линейное время, строка выброшена", () => {
+test("Endfield: 40 000 «&ndash;» подряд без закрывающего span — линейное время, строка выброшена", async () => {
   const row = `<tr valign="top"><div class="header">Winter Hunt</div><b><abbr title="Americas / Europe">AM / EU</abbr>:</b> <span>${"&ndash;".repeat(40_000)}<b>`;
-  const started = performance.now();
-  const r = parseEndfieldTable(row, "https://endfield.wiki.gg/wiki/Headhunting/Banners");
-  const ms = performance.now() - started;
+  const r = await runBounded<EndfieldResult>("../src/sources/banners.ts", "parseEndfieldTable", [row, ENDFIELD_URL]);
   assert.equal(r.dropped, 1);
   assert.equal(r.drafts.length, 0);
-  assert.ok(ms < TIME_LIMIT_MS, `заняло ${ms.toFixed(0)} мс`);
+});
+
+test("Endfield: оператор — первая ссылка [[…]] сразу после </span>, обрывки до неё пропускаются", () => {
+  const withJunk = (junk: string) => ENDFIELD.replace("<ul><li><span", `${junk}<ul><li><span`);
+  for (const junk of ["</span>[[Bad|x]]", "</span>[[]]", "</span>[[ no close", "</span> [[Bad|x</span>"]) {
+    const r = parseEndfieldTable(withJunk(junk), ENDFIELD_URL);
+    assert.deepEqual(r.drafts[0]?.banner.featured, ["Typhoeus"], junk);
+  }
+});
+
+test("Endfield: около 200 КБ «</span>[[» без закрытия — линейное время, оператора нет", async () => {
+  const row = `<tr valign="top"><div class="header">Winter Hunt</div>Limited operators: ${"</span>[[".repeat(25_000)}`;
+  const r = await runBounded<EndfieldResult>("../src/sources/banners.ts", "parseEndfieldTable", [row, ENDFIELD_URL]);
+  assert.equal(r.parsed, 1);
+  assert.equal(r.drafts.length, 0);
+});
+
+test("Endfield: оператор находится и после 200 КБ обрывков «</span>[[», оборванных «|»", async () => {
+  const row = ENDFIELD.replace("<ul><li><span", `${"</span>[[".repeat(25_000)}|</span> [[Real Name]]<ul><li><span`);
+  const r = await runBounded<EndfieldResult>("../src/sources/banners.ts", "parseEndfieldTable", [row, ENDFIELD_URL]);
+  assert.deepEqual(r.drafts[0]?.banner.featured, ["Real Name"]);
 });

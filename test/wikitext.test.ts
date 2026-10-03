@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { findTemplates, plainText, rewardsText, splitTopLevel, stripComments, templateParams } from "../src/wikitext.ts";
+import { findTemplates, plainText, rewardsText, splitTopLevel, stripComments, templateParams, type TemplateParams } from "../src/wikitext.ts";
+import { runBounded } from "./bounded.ts";
 
 const GENSHIN = `{{Code Row/Header}}<!--
    {{Code Row
@@ -73,10 +74,6 @@ test("правильно вложенные {{ }} и [[ ]] по-прежнему
   assert.deepEqual(parts, ["CODE1234", "{{Item List|Foo*1;Bar*2|mode=br}}", "[[Page|Text|with pipe]]", "end"]);
 });
 
-// Предел времени на порядки щедрее нормы: тест ловит возврат квадратичного или
-// откатывающегося разбора, а не ровность замеров.
-const TIME_LIMIT_MS = 500;
-
 const ROW_A = "{{Code Row|AAAA1111|G|Primogem*60|2026-09-01|unknown}}";
 const ROW_B = "{{Code Row|BBBB2222|G|Mora*10000|2026-09-02|unknown}}";
 const INNER_A = ROW_A.slice(2, -2);
@@ -88,22 +85,21 @@ test("параметры: имя режется по первому «=», не 
   assert.deepEqual([...p.named], [["a b", "x=y"], ["k", ""]]);
 });
 
-test("параметр из 100 000 пробелов и «x» разбирается за линейное время", () => {
-  const started = performance.now();
-  const p = templateParams(`Tmpl|${" ".repeat(100_000)}x`);
-  const ms = performance.now() - started;
-  assert.deepEqual(p.positional, ["x"]);
+test("параметр из одних пробелов вместо имени остаётся позиционным", () => {
+  const p = templateParams("T| = x|\t=y");
+  assert.deepEqual(p.positional, ["= x", "=y"]);
   assert.equal(p.named.size, 0);
-  assert.ok(ms < TIME_LIMIT_MS, `заняло ${ms.toFixed(0)} мс`);
 });
 
-test("200 КБ вложенных скобок обходятся за линейное время", () => {
+test("параметр из 100 000 пробелов и «x» разбирается за линейное время", async () => {
+  const p = await runBounded<TemplateParams>("../src/wikitext.ts", "templateParams", [`Tmpl|${" ".repeat(100_000)}x`]);
+  assert.deepEqual(p.positional, ["x"]);
+  assert.equal(p.named.size, 0);
+});
+
+test("200 КБ вложенных скобок обходятся за линейное время", async () => {
   const nested = "{{".repeat(50_000) + "}}".repeat(50_000);
-  const started = performance.now();
-  const rows = findTemplates(nested, "Code Row");
-  const ms = performance.now() - started;
-  assert.deepEqual(rows, []);
-  assert.ok(ms < TIME_LIMIT_MS, `заняло ${ms.toFixed(0)} мс`);
+  assert.deepEqual(await runBounded<string[]>("../src/wikitext.ts", "findTemplates", [nested, "Code Row"]), []);
 });
 
 test("вызов в глубине вложенности находится, вложенные внутрь найденного не дублируются", () => {

@@ -105,9 +105,39 @@ const EF_FILE = /\[\[File:([^|\]]+)\|/;
 // на длинной строке перебирали бы все его положения.
 const EF_TIMES =
   /AM \/ EU<\/abbr>:<\/b>\s*<span[^>]*>([^<]*)<span class="visually-hidden">\((UTC[^)]*)\)<\/span>/;
-const EF_OPERATOR = /<\/span>\s*\[\[([^\]|]+)\]\]/;
+// Начало ссылки на оператора после `</span>`. Липкое: проверяется ровно с заданной позиции.
+const EF_LINK_OPEN = /\s*\[\[/y;
 
+const SPAN_END = "</span>";
 const DASH = "&ndash;";
+
+/** Индекс первого `]` или `|` начиная с from; -1, если их больше нет. */
+function nextLinkEnd(text: string, from: number): number {
+  for (let j = from; j < text.length; j++) {
+    if (text[j] === "]" || text[j] === "|") return j;
+  }
+  return -1;
+}
+
+/**
+ * Имя из первой ссылки `[[Имя]]` сразу после `</span>` (между ними возможны пробелы);
+ * undefined, если такой нет. Прежнее выражение для каждого `</span>[[` заново читало имя
+ * до ближайшей `]` или `|`, и на длинной цепочке обрывков это давало квадрат. Конец имени
+ * один на все кандидаты до него, поэтому ищется он заново, только когда прежний остался
+ * позади: весь поиск — один проход по тексту.
+ */
+function firstOperator(text: string): string | undefined {
+  let end = -2; // -2 — ещё не искали, -1 — `]` и `|` больше нет
+  for (let at = text.indexOf(SPAN_END); at !== -1; at = text.indexOf(SPAN_END, at + SPAN_END.length)) {
+    EF_LINK_OPEN.lastIndex = at + SPAN_END.length;
+    if (!EF_LINK_OPEN.test(text)) continue;
+    const from = EF_LINK_OPEN.lastIndex;
+    if (end !== -1 && end < from) end = nextLinkEnd(text, from);
+    if (end === -1) return undefined;
+    if (end > from && text.startsWith("]]", end)) return text.slice(from, end);
+  }
+  return undefined;
+}
 
 /** «Sep 01, 2026, 23:00 &ndash; Sep 30, 2026, 11:59 » → обе даты без пробелов по краям; null, если разделителя нет. */
 function splitRange(text: string): [string, string] | null {
@@ -124,7 +154,7 @@ export function parseEndfieldTable(expanded: string, pageUrl: string): { drafts:
     const title = EF_TITLE.exec(row)?.[1];
     const times = EF_TIMES.exec(row);
     const limited = row.split("Limited operators:")[1] ?? "";
-    const operator = EF_OPERATOR.exec(limited)?.[1];
+    const operator = firstOperator(limited);
     const range = times ? splitRange(times[1]!) : null;
     const start = range ? parseEnglishDate(range[0]) : null;
     const end = range ? parseEnglishDate(range[1]) : null;

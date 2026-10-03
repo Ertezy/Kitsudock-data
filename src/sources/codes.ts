@@ -74,10 +74,46 @@ export function parseRowCodes(
   return { found, codes, parsed, dropped };
 }
 
-// Серия пробелов между `||` покрыта одним `[^|]*` и не пересекается с соседними
-// `\s*` — иначе движок на длинной серии перебирает все способы её разделить.
-const WUWA_ROW =
-  /<code>([^<]+)<\/code>\s*\|\|[^|]*\|\|\s*(\{\{Card List[\s\S]*?\}\})[\s\S]*?Valid until:\s*([^'<\n]+)/g;
+// Голова строки: код, колонка сервера и начало списка наград. Серия пробелов между
+// `||` покрыта одним `[^|]*` и не пересекается с соседними `\s*` — иначе движок на
+// длинной серии перебирает все способы её разделить.
+const WUWA_HEAD = /<code>([^<]+)<\/code>\s*\|\|[^|]*\|\|\s*(?=\{\{Card List)/g;
+// Значение срока после «Valid until:». Липкое: проверяется ровно с заданной позиции.
+const WUWA_UNTIL = /\s*([^'<\n]+)/y;
+const CARD_LIST = "{{Card List";
+const VALID_UNTIL = "Valid until:";
+
+/** Первое «Valid until:» со значением начиная с from: само значение и позиция за ним. */
+function validUntil(section: string, from: number): { value: string; end: number } | null {
+  for (let at = section.indexOf(VALID_UNTIL, from); at !== -1; at = section.indexOf(VALID_UNTIL, at + VALID_UNTIL.length)) {
+    WUWA_UNTIL.lastIndex = at + VALID_UNTIL.length;
+    const m = WUWA_UNTIL.exec(section);
+    if (m) return { value: m[1]!, end: WUWA_UNTIL.lastIndex };
+  }
+  return null;
+}
+
+/**
+ * Строки таблицы активных кодов: [код, `{{Card List…}}`, срок]. Раньше это делало
+ * одно выражение с двумя ленивыми `[\s\S]*?`, и на строках без срока оно перебирало
+ * сочетания (почти куб от числа строк). Результат тот же, но вперёд идём один раз:
+ * первая `}}` после начала списка, за ней первое «Valid until:» со значением. Если
+ * для строки нет ни того ни другого, то нет и для любой следующей: их `}}` и срок
+ * лежат не раньше. Поэтому на первой такой строке разбор заканчивается.
+ */
+function wuwaRows(section: string): [string, string, string][] {
+  const rows: [string, string, string][] = [];
+  WUWA_HEAD.lastIndex = 0;
+  for (let head = WUWA_HEAD.exec(section); head !== null; head = WUWA_HEAD.exec(section)) {
+    const cardStart = WUWA_HEAD.lastIndex;
+    const cardEnd = section.indexOf("}}", cardStart + CARD_LIST.length);
+    const until = cardEnd === -1 ? null : validUntil(section, cardEnd + 2);
+    if (until === null) break;
+    rows.push([head[1]!, section.slice(cardStart, cardEnd + 2), until.value]);
+    WUWA_HEAD.lastIndex = until.end;
+  }
+  return rows;
+}
 
 export function parseWuwaCodes(wikitext: string, source: string): ParsedCodes {
   const start = wikitext.indexOf("===Active===");
@@ -88,10 +124,10 @@ export function parseWuwaCodes(wikitext: string, source: string): ParsedCodes {
   const codes: Code[] = [];
   let parsed = 0;
   let dropped = 0;
-  for (const m of section.matchAll(WUWA_ROW)) {
+  for (const [rawCode, card, rawUntil] of wuwaRows(section)) {
     parsed++;
-    const code = m[1]!.trim();
-    const until = m[3]!.replace(/\(PT\)/, "").trim();
+    const code = rawCode.trim();
+    const until = rawUntil.replace(/\(PT\)/, "").trim();
     let expiresAt: number | null = null;
     if (until.toLowerCase() !== "unknown") {
       const parts = parseEnglishDate(until);
@@ -101,7 +137,7 @@ export function parseWuwaCodes(wikitext: string, source: string): ParsedCodes {
       }
       expiresAt = inTimeZone(parts, "America/Los_Angeles");
     }
-    const rewardsValue = rewardsText(m[2]!);
+    const rewardsValue = rewardsText(card);
     if (!CODE_PATTERN.test(code) || !rewardsFits(rewardsValue)) {
       dropped++;
       continue;
