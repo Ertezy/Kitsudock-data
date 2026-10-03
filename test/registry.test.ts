@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { Http, HttpResponse } from "../src/http.ts";
+import { StatusError, type Http, type HttpResponse } from "../src/http.ts";
 import { fandom } from "../src/mediawiki.ts";
 import { mergeHub, sectionKey } from "../src/merge.ts";
 import { GAME_IDS, type HubData, type HubGame, type Item, type SourceRun } from "../src/types.ts";
 import { bannerStarts, parseOverrides } from "../src/overrides.ts";
 import { KURO_MENU_URL, kuroArticleJsonUrl, kuroArticleUrl, kuroBanners, unreadableAnnouncement, type KuroBannerFact } from "../src/sources/kuro.ts";
 import { KURO_SIGNAL, SOURCES, emptyMemory, fetchKuroAnnouncements, kuroBannersFromMemory, kuroFactsFromMemory } from "../src/sources/registry.ts";
-import { MAX_BANNERS_PER_GAME, MAX_KURO_ARTICLES_PER_RUN, MAX_KURO_BANNERS_PER_ARTICLE } from "../src/validate.ts";
+import { KURO_ARTICLES_BUDGET_MS, MAX_BANNERS_PER_GAME, MAX_KURO_ARTICLES_PER_RUN, MAX_KURO_BANNERS_PER_ARTICLE } from "../src/validate.ts";
 
 type Route = (url: URL) => HttpResponse | undefined;
 
@@ -909,4 +909,109 @@ test("баннеры ennead.cc: 120 живых и 10 закончившихся 
     run.items.map((b) => (b as { title: string }).title).sort(),
     Array.from({ length: 50 }, (_, i) => `Hero ${70 + i}`).sort(),
   );
+});
+
+// Время прогона ограничено: сбой связи и бюджет времени обрывают чтение статей, остаток ждёт следующего прогона.
+
+/** Тот же сайт Kuro, у которого запросы статей предварительно проходят через `onArticle`. */
+const withArticleHook = (k: ReturnType<typeof kuroSite>, onArticle: (url: string, etag: string | undefined) => void): Http => ({
+  get(url, validators) {
+    if (url.includes("/article/")) onArticle(url, validators?.etag);
+    return k.http.get(url, validators);
+  },
+});
+
+const timeoutError = () => new DOMException("The operation was aborted due to timeout", "TimeoutError");
+
+test("анонсы Kuro: статья не ответила за таймаут — чтение останавливается, прогон не падает, остальное — в следующий раз", async () => {
+  const k = kuroSite();
+  const requested: string[] = [];
+  const http = withArticleHook(k, (url) => {
+    requested.push(url);
+    throw timeoutError();
+  });
+  const memory = emptyMemory();
+  const result = await fetchKuroAnnouncements({ http, now: NOW, memory });
+  assert.equal(result.ok, true, "меню отработало — источник не сломан");
+  assert.equal(requested.length, 1, "после первого таймаута вторая статья не запрашивается");
+  assert.match(requested[0]!, /9001\.json$/);
+  assert.ok(result.ok && result.warnings.length === 2 && /9001/.test(result.warnings[0]!), "предупреждение о статье и об остановке");
+  assert.deepEqual(memory.kuroFacts, {}, "ключа нет — статья не прочитана и сигнала не даёт");
+  assert.deepEqual(memory.kuro.map((a) => a.articleId), [9001], "анонс из меню остался");
+  // Следующий прогон читает всё, что не успел.
+  const healed = await fetchKuroAnnouncements({ http: k.http, now: NOW, memory });
+  assert.deepEqual(healed.ok && healed.warnings, []);
+  assert.deepEqual(memory.kuroFacts, { "9001": [FACT] });
+  assert.deepEqual(memory.kuroReleases, { "9.9": RELEASE_END });
+});
+
+test("анонсы Kuro: обрыв соединения останавливает чтение так же, как таймаут", async () => {
+  const k = kuroSite();
+  let requested = 0;
+  const http = withArticleHook(k, () => {
+    requested++;
+    throw new TypeError("fetch failed", { cause: new Error("ECONNRESET") });
+  });
+  const result = await fetchKuroAnnouncements({ http, now: NOW, memory: emptyMemory() });
+  assert.equal(result.ok, true);
+  assert.equal(requested, 1);
+});
+
+test("анонсы Kuro: ответ 404 по одной статье чтение не останавливает, как и раньше", async () => {
+  const k = kuroSite();
+  const requested: string[] = [];
+  const http = withArticleHook(k, (url) => {
+    requested.push(url);
+    if (url.endsWith("/9001.json")) throw new StatusError(404, url);
+  });
+  const memory = emptyMemory();
+  const result = await fetchKuroAnnouncements({ http, now: NOW, memory });
+  assert.equal(result.ok, true);
+  assert.equal(requested.length, 2, "патчноут читается после статьи с 404");
+  assert.deepEqual(memory.kuroReleases, { "9.9": RELEASE_END });
+  assert.ok(result.ok && result.warnings.length === 1 && /9001/.test(result.warnings[0]!));
+});
+
+test("анонсы Kuro: время чтения вышло — следующая статья не запрашивается, остальные ждут следующего прогона", async () => {
+  assert.equal(KURO_ARTICLES_BUDGET_MS, 120_000);
+  const k = kuroSite();
+  const stamp = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+  const ids = Array.from({ length: 10 }, (_, i) => 20_000 + i);
+  k.site.menu = ids.map((articleId, i) => ({
+    articleId,
+    articleTitle: "[Version 9.9 Featured Resonator/Weapon Convene: Phase I]",
+    startTime: stamp(Date.UTC(2026, 8, 15, 23, 59) - i * 60_000),
+  }));
+  for (const id of ids) {
+    k.site.html[id] = ANNOUNCEMENT_HTML;
+    k.site.etags[id] = `"e${id}"`;
+  }
+  // Каждая статья, которую нужно читать, «отвечает» 50 секунд (ответ 304 — мгновенно): часы идут по ответам, настоящего ожидания нет.
+  let elapsed = 1_000_000;
+  const clock = () => elapsed;
+  const requested: string[] = [];
+  const http = withArticleHook(k, (url, etag) => {
+    requested.push(url);
+    if (etag === undefined) elapsed += 50_000;
+  });
+  const memory = emptyMemory();
+  const result = await fetchKuroAnnouncements({ http, now: NOW, memory, clock });
+  assert.equal(result.ok, true);
+  assert.equal(requested.length, 3, "0 с, 50 с и 100 с — до бюджета; на 150 с чтение остановлено");
+  requested.length = 0;
+  assert.deepEqual(Object.keys(memory.kuroFacts).sort(), ids.slice(0, 3).map(String).sort(), "прочитаны самые новые");
+  assert.equal(memory.kuro.length, 10, "остальные анонсы из меню остались");
+  assert.ok(result.ok && result.warnings.length === 1 && /время/.test(result.warnings[0]!));
+  // Следующий прогон с новыми часами продолжает: прочитанные отвечают 304, остальные читаются.
+  elapsed = 5_000_000;
+  const next = await fetchKuroAnnouncements({ http, now: NOW, memory, clock });
+  assert.equal(next.ok, true);
+  assert.deepEqual(Object.keys(memory.kuroFacts).sort(), ids.slice(0, 6).map(String).sort(), "прочитанные ответили 304 и времени не взяли, следующие три прочитаны");
+});
+
+test("анонсы Kuro: до бюджета времени ничего не меняется — читаются все статьи без предупреждений", async () => {
+  const k = kuroSite();
+  const result = await fetchKuroAnnouncements({ http: k.http, now: NOW, memory: emptyMemory(), clock: () => 0 });
+  assert.deepEqual(result.ok && result.warnings, []);
+  assert.equal(k.site.seen.filter((r) => r.url.includes("/article/")).length, 2);
 });

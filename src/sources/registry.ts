@@ -1,10 +1,10 @@
 // Какие источники есть, как часто их спрашивать и как из ответа получить записи.
 
-import type { Http, Validators } from "../http.ts";
+import { isTransportError, type Http, type Validators } from "../http.ts";
 import { isLive, judge } from "../items.ts";
 import { ENDFIELD_WIKI, categoryMembers, expandTemplates, fandom, lastRevisions, pageWikitext, thumbnails, type Wiki } from "../mediawiki.ts";
 import { GAME_IDS, VIDEO_LANGS, type AppRelease, type Banner, type Code, type GameBackground, type GameId, type Item, type Section, type SourceRun, type VideoLang } from "../types.ts";
-import { MAX_BANNERS_PER_GAME, MAX_KURO_ARTICLES_PER_RUN } from "../validate.ts";
+import { KURO_ARTICLES_BUDGET_MS, MAX_BANNERS_PER_GAME, MAX_KURO_ARTICLES_PER_RUN } from "../validate.ts";
 import type { ArtMemory } from "./art.ts";
 import { BANNER_PAGES, parseBannerPage, parseEndfieldTable, parseEnneadBanners, recentBannerPages, type BannerDraft, type BannerPageSpec, type PageOutcome } from "./banners.ts";
 import { parseEnneadCodes, parseRowCodes, parseWuwaCodes } from "./codes.ts";
@@ -67,6 +67,8 @@ export interface SourceContext {
   http: Http;
   now: number;
   memory: SourceMemory;
+  /** Монотонные часы в миллисекундах для бюджетов времени; по умолчанию performance.now (в тестах подставляются свои). */
+  clock?: () => number;
 }
 
 export interface SourceDef {
@@ -344,6 +346,10 @@ export async function fetchKuroAnnouncements(
  * Читает статьи анонсов и патчноутов, запоминает факты и забывает всё, что устарело. Возвращает предупреждения.
  * Меню может отдать сколько угодно статей, а читается за прогон не больше MAX_KURO_ARTICLES_PER_RUN самых
  * новых; остальные — не ошибка: их прочтёт следующий прогон, когда новее них станет меньше, или они устареют.
+ * Время тоже ограничено: сбой связи (таймаут, обрыв) обрывает чтение — сайт не отвечает, остальным статьям
+ * не лучше, — и вышедший бюджет KURO_ARTICLES_BUDGET_MS обрывает его так же. Без этого тридцать статей
+ * по 45 секунд (таймаут и повтор) не укладывались бы в лимит прогона, и состояние не сохранялось бы.
+ * Ответ с кодом (404 и подобные) и не JSON — про одну статью: чтение идёт дальше.
  */
 async function readKuroArticles(ctx: SourceContext, announcements: Announcement[], patchNotes: PatchNotes[]): Promise<string[]> {
   const { memory } = ctx;
@@ -367,7 +373,13 @@ async function readKuroArticles(ctx: SourceContext, announcements: Announcement[
     if (!newestOfVersion.has(note.version)) newestOfVersion.set(note.version, note.articleId);
   }
   const warnings: string[] = [];
+  const clock = ctx.clock ?? (() => performance.now());
+  const started = clock();
   for (const id of ids) {
+    if (clock() - started >= KURO_ARTICLES_BUDGET_MS) {
+      warnings.push("чтение статей Kuro остановлено: вышло время, остальные — в следующий прогон");
+      break;
+    }
     const url = kuroArticleJsonUrl(id);
     try {
       const res = await conditional(ctx, url);
@@ -398,6 +410,10 @@ async function readKuroArticles(ctx: SourceContext, announcements: Announcement[
       memory.validators[url] = res.validators;
     } catch (error) {
       warnings.push(`статья Kuro ${id}: ${(error as Error).message}`);
+      if (isTransportError(error)) {
+        warnings.push("чтение статей Kuro остановлено: сайт не отвечает, остальные — в следующий прогон");
+        break;
+      }
     }
   }
   // Факты и сроки версий живут, пока анонс в памяти (свежий или с идущим баннером).

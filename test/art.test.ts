@@ -4,7 +4,7 @@ import { StatusError, type Http } from "../src/http.ts";
 import { ART_RECHECK_HOURS, artKey, pickPreviousArt, refreshArt, withArt, type ArtMemory } from "../src/sources/art.ts";
 import { ENNEAD_SOURCE } from "../src/sources/codes.ts";
 import type { Banner, HubData } from "../src/types.ts";
-import { MAX_ART_LOOKUPS_PER_RUN } from "../src/validate.ts";
+import { ART_BUDGET_MS, MAX_ART_LOOKUPS_PER_RUN } from "../src/validate.ts";
 
 const NOW = 1_800_000_000;
 const THUMB = "https://static.wikia.nocookie.net/w/images/a/aa/Test_Banner_2026-05-21.jpg/revision/latest/scale-to-width-down/400";
@@ -253,4 +253,31 @@ test("ответ с кодом 404 по одному баннеру поиск �
   const warnings = await refreshArt(http, [banner({ title: "A" }), banner({ title: "B" }), banner({ title: "C" })], art, NOW);
   assert.equal(urls.length, 3);
   assert.equal(warnings.length, 3);
+});
+
+test("время поиска арта вышло — следующий баннер не запрашивается, остальные ждут следующего прогона", async () => {
+  assert.equal(ART_BUDGET_MS, 120_000);
+  let elapsed = 7_000;
+  const urls: string[] = [];
+  const http: Http = {
+    async get(url) {
+      urls.push(url);
+      elapsed += 50_000; // вики «отвечает» 50 секунд
+      return { status: 200, body: JSON.stringify({ query: { allimages: [] } }), validators: {} };
+    },
+  };
+  const banners = Array.from({ length: 10 }, (_, i) => banner({ title: `Synthetic ${i}` }));
+  const art: ArtMemory = {};
+  const warnings = await refreshArt(http, banners, art, NOW, () => elapsed);
+  assert.equal(urls.length, 3, "0 с, 50 с и 100 с — до бюджета; на 150 с поиск остановлен");
+  assert.equal(Object.keys(art).length, 3);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /время/);
+});
+
+test("до бюджета времени поиск арта идёт, как раньше, без предупреждений", async () => {
+  const wiki = fakeWiki({}, {});
+  const warnings = await refreshArt(wiki.http, [banner({ title: "A" }), banner({ title: "B" })], {}, NOW, () => 0);
+  assert.deepEqual(warnings, []);
+  assert.equal(wiki.urls.length, 2);
 });

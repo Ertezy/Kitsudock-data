@@ -11,7 +11,7 @@ import { isTransportError, type Http } from "../http.ts";
 import { fandom, filesWithPrefix, thumbnails, type WikiFile } from "../mediawiki.ts";
 import { isDue } from "../state.ts";
 import type { Banner, HubData } from "../types.ts";
-import { MAX_ART_LOOKUPS_PER_RUN } from "../validate.ts";
+import { ART_BUDGET_MS, MAX_ART_LOOKUPS_PER_RUN } from "../validate.ts";
 import { BANNER_PAGES } from "./banners.ts";
 import { ENNEAD_SOURCE } from "./codes.ts";
 
@@ -75,11 +75,19 @@ const wantsArt = (banner: Banner) => banner.image === null && banner.url !== ENN
  * убираются. Сбой по одному баннеру оставляет его прошлую картинку, откладывает
  * повтор на тот же срок и возвращается предупреждением: прогон из-за картинки не падает.
  * За прогон проверяется не больше MAX_ART_LOOKUPS_PER_RUN баннеров (остальные — в следующий
- * прогон), а сбой связи (таймаут, обрыв) обрывает поиск: вики не отвечает, остальным баннерам
- * не лучше.
+ * прогон), сбой связи (таймаут, обрыв) обрывает поиск: вики не отвечает, остальным баннерам
+ * не лучше, — и вышедший бюджет ART_BUDGET_MS обрывает его так же. `clock` — монотонные часы в
+ * миллисекундах (в тестах подставляются свои).
  */
-export async function refreshArt(http: Http, banners: Banner[], art: ArtMemory, now: number): Promise<string[]> {
+export async function refreshArt(
+  http: Http,
+  banners: Banner[],
+  art: ArtMemory,
+  now: number,
+  clock: () => number = () => performance.now(),
+): Promise<string[]> {
   const warnings: string[] = [];
+  const started = clock();
   const wanted = new Map<string, Banner>();
   for (const banner of banners) if (wantsArt(banner)) wanted.set(artKey(banner), banner);
   for (const key of Object.keys(art)) if (!wanted.has(key)) delete art[key];
@@ -92,6 +100,10 @@ export async function refreshArt(http: Http, banners: Banner[], art: ArtMemory, 
       continue;
     }
     if (lookups >= MAX_ART_LOOKUPS_PER_RUN) break; // остальных проверит следующий прогон
+    if (clock() - started >= ART_BUDGET_MS) {
+      warnings.push("поиск арта остановлен: вышло время, остальные баннеры — в следующий прогон");
+      break;
+    }
     lookups++;
     const wiki = wikiFor(banner.gameId)!;
     try {
