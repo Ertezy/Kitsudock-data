@@ -276,11 +276,11 @@ test("адрес: точки в имени файла и в запросе — �
 // Строки начинаются с «https://github.com/Ertezy/Kitsudock/releases/», но читатель разберёт их иначе:
 // первые пять уходят в чужой путь на github.com, последняя остаётся внутри, но строка с ней не равна разобранному виду.
 const APP_URL_ESCAPES = [
-  "https://github.com/Ertezy/Kitsudock/releases/../../attacker/repo/releases/tag/v1",
-  "https://github.com/Ertezy/Kitsudock/releases/%2e%2e/%2e%2e/attacker/repo/releases/tag/v1",
-  "https://github.com/Ertezy/Kitsudock/releases/%2E%2E/%2E%2E/attacker/repo/releases/tag/v1",
-  "https://github.com/Ertezy/Kitsudock/releases/.%2e/.%2e/attacker/repo/releases/tag/v1",
-  "https://github.com/Ertezy/Kitsudock/releases/%2e./%2e./attacker/repo/releases/tag/v1",
+  "https://github.com/Ertezy/Kitsudock/releases/../../other/repo/releases/tag/v1",
+  "https://github.com/Ertezy/Kitsudock/releases/%2e%2e/%2e%2e/other/repo/releases/tag/v1",
+  "https://github.com/Ertezy/Kitsudock/releases/%2E%2E/%2E%2E/other/repo/releases/tag/v1",
+  "https://github.com/Ertezy/Kitsudock/releases/.%2e/.%2e/other/repo/releases/tag/v1",
+  "https://github.com/Ertezy/Kitsudock/releases/%2e./%2e./other/repo/releases/tag/v1",
   "https://github.com/Ertezy/Kitsudock/releases/./tag/v1",
 ];
 
@@ -492,4 +492,65 @@ test("validateHub: целая суррогатная пара в тексте п
   hub.videos[0]!.title = `Trailer ${EMOJI}`;
   assert.deepEqual(validateHub(hub), []);
   assert.doesNotMatch(JSON.stringify(hub), /\\u[dD][89a-fA-F][0-9a-fA-F]{2}/);
+});
+
+// Время в файле — целые секунды, которые читатель (serde_json) помещает в i64: безопасные целые, не любое «целое» double.
+test("validateHub: время и числа вне безопасных целых отвергаются, граница проходит", () => {
+  const unsafe = [2 ** 53, 2 ** 60, 1e21, 1e300, -(2 ** 53)];
+  const fields: [string, (hub: HubData, value: number) => void][] = [
+    ["updatedAt", (h, v) => void (h.updatedAt = v)],
+    ["codes[0].expiresAt", (h, v) => void (h.codes[0]!.expiresAt = v)],
+    ["banners[0].startsAt", (h, v) => void ((h.banners[0]!.startsAt = v), (h.banners[0]!.endsAt = 2 ** 62))],
+    ["banners[0].endsAt", (h, v) => void (h.banners[0]!.endsAt = v)],
+    ["videos[0].publishedAt", (h, v) => void (h.videos[0]!.publishedAt = v)],
+  ];
+  for (const [path, set] of fields) {
+    for (const value of unsafe) {
+      const hub = good();
+      set(hub, value);
+      assert.ok(
+        validateHub(hub).some((e) => e.startsWith(path)),
+        `${path} должно отвергать ${value}`,
+      );
+    }
+  }
+  const hub = good();
+  hub.updatedAt = Number.MAX_SAFE_INTEGER;
+  hub.codes[0]!.expiresAt = Number.MAX_SAFE_INTEGER;
+  hub.banners[0]!.startsAt = Number.MAX_SAFE_INTEGER - 1;
+  hub.banners[0]!.endsAt = Number.MAX_SAFE_INTEGER;
+  hub.videos[0]!.publishedAt = Number.MAX_SAFE_INTEGER;
+  assert.deepEqual(validateHub(hub, 10_000), [], "самое большое безопасное целое проходит");
+});
+
+// Имена для особого употребления (localhost, local, internal, home.arpa) наружу не смотрят: в файле им не место.
+test("адрес: хосты особого назначения — .localhost, .local, .internal, .home.arpa — отвергаются, похожие настоящие проходят", () => {
+  for (const url of [
+    "https://app.localhost/x",
+    "https://a.b.localhost/x",
+    "https://printer.local/x",
+    "https://db.internal/x",
+    "https://x.y.internal/x",
+    "https://router.home.arpa/x",
+    "https://home.arpa/x",
+    "https://APP.LocalHost/x",
+    "https://Printer.LOCAL/x",
+    "https://db.INTERNAL/x?q=1",
+    "https://app。localhost/x", // точка иного вида: разбор приводит её к обычной
+  ]) {
+    assert.equal(isPublicHttpsUrl(url), false, url);
+  }
+  for (const url of [
+    "https://localhost.example.org/x",
+    "https://local.example.org/x",
+    "https://internal.example.org/x",
+    "https://example.org/local/internal/home.arpa",
+    "https://example.org/?h=x.localhost",
+    "https://notlocal.com/x",
+    "https://myinternal.net/x",
+    "https://home.arpa.example.org/x",
+    "https://a.b.example.org/x",
+  ]) {
+    assert.equal(isPublicHttpsUrl(url), true, url);
+  }
 });

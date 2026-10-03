@@ -100,10 +100,16 @@ export function unreadableAnnouncement(
 ): Announcement | null {
   const fresh = announcements.filter((a) => isFresh(a.publishedAt, now));
   if (fresh.length === 0) return null;
-  const latest = Math.max(...fresh.map((a) => a.publishedAt));
+  // Циклом, а не Math.max(...список): длинный список в аргументах переполнил бы стек.
+  let latest = -Infinity;
+  for (const a of fresh) if (a.publishedAt > latest) latest = a.publishedAt;
   if (manualStarts.some((start) => start >= latest - MANUAL_BANNER_SECONDS)) return null;
-  const empty = fresh.filter((a) => a.publishedAt === latest && facts[String(a.articleId)]?.length === 0);
-  return empty.sort((a, b) => b.articleId - a.articleId)[0] ?? null;
+  let found: Announcement | null = null;
+  for (const a of fresh) {
+    if (a.publishedAt !== latest || facts[String(a.articleId)]?.length !== 0) continue;
+    if (found === null || a.articleId > found.articleId) found = a;
+  }
+  return found;
 }
 
 /** Идёт ли ещё хотя бы один из баннеров, прочитанных из анонса: по ним анонс помнится и после 21 дня. */

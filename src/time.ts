@@ -75,18 +75,31 @@ export function atOffset(p: DateParts, offsetMinutes: number): number {
   return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) / 1000 - offsetMinutes * 60;
 }
 
+// Форматтер Intl дорог в создании, а на каждую дату нужно два вызова: он один на пояс. Пояса не растут —
+// их единицы (America/Los_Angeles), поэтому таблица не разрастается.
+const zoneFormats = new Map<string, Intl.DateTimeFormat>();
+
+function zoneFormat(timeZone: string): Intl.DateTimeFormat {
+  let format = zoneFormats.get(timeZone);
+  if (format === undefined) {
+    format = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    zoneFormats.set(timeZone, format);
+  }
+  return format;
+}
+
 /** Смещение часового пояса в минутах в данный момент — через Intl, без таблиц. */
 function zoneOffsetAt(unix: number, timeZone: string): number {
-  const format = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  const format = zoneFormat(timeZone);
   const fields: Record<string, number> = {};
   for (const part of format.formatToParts(new Date(unix * 1000))) {
     if (part.type !== "literal") fields[part.type] = Number(part.value);

@@ -38,7 +38,7 @@ export const ART_BUDGET_MS = 120_000;
 
 // Текст в файле — корректный UTF-16, без одиноких половин суррогатной пары. JSON.stringify пишет
 // такую половину как «\ud800», а читатель файла в приложении (serde_json) её отвергает, и весь файл
-// не читается. Источники такие знаки приносят (JSON с «\ud800», числовая сущность &#55296;), поэтому
+// не читается. Источники такие знаки приносят (JSON с «\ud800», числовые сущности), поэтому
 // проверка стоит во всех общих проверках текста, а запись с ней парсер выбрасывает.
 
 /** Награда кода умещается в предел длины и без одиноких суррогатов. */
@@ -81,6 +81,10 @@ const IPV4_HOST = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 // Имя из непустых меток через точку: хотя бы одна точка, ни точки на конце, ни пустой метки.
 // Так не проходят «localhost», «hsr», «localhost.» и «e..org».
 const DOTTED_HOST = /^[^.]+(?:\.[^.]+)+$/;
+// Имена особого назначения: .localhost, .local, .internal и .home.arpa (вместе с самим home.arpa) ведут не в
+// интернет, а на машину читателя или в его домашнюю сеть, и в файле для всех им не место. Одиночные «localhost»
+// и «local» уже не проходят как имя без точки. Проверяется разобранное имя: оно уже строчное и без точки на конце.
+const SPECIAL_USE_HOST = /(?:^|\.)(?:localhost|local|internal|home\.arpa)$/;
 // Сегмент пути «.» или «..» — и в записи %2e любого регистра: разбор такие сегменты сворачивает,
 // и адрес приходит не туда, куда читается в строке.
 const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/i;
@@ -88,7 +92,8 @@ const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/i;
 /**
  * Простой публичный https-адрес: строка начинается с «https://», не длиннее URL_MAX,
  * без пробелов и управляющих знаков, без логина и порта (явного тоже: «:443» разбор прячет),
- * без сегментов пути «.» и «..», хост — имя с точкой (сразу после «https://», без лишних «/»), а не IPv4 и не IPv6. Разбор приводит
+ * без сегментов пути «.» и «..», хост — имя с точкой (сразу после «https://», без лишних «/»), а не IPv4, не IPv6 и не имя
+ * особого назначения (.localhost, .local, .internal, .home.arpa). Разбор приводит
  * «2130706433», «0x7f.1» и «127.1» к 127.0.0.1, поэтому IPv4 ищется в уже разобранном имени.
  */
 export function isPublicHttpsUrl(value: unknown): value is string {
@@ -110,7 +115,7 @@ export function isPublicHttpsUrl(value: unknown): value is string {
     return false;
   }
   if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.port !== "") return false;
-  return !url.hostname.startsWith("[") && !IPV4_HOST.test(url.hostname) && DOTTED_HOST.test(url.hostname);
+  return !url.hostname.startsWith("[") && !IPV4_HOST.test(url.hostname) && DOTTED_HOST.test(url.hostname) && !SPECIAL_USE_HOST.test(url.hostname);
 }
 
 /**
@@ -132,7 +137,8 @@ export function bannerFits(title: string, featured: string[]): boolean {
   return bannerTitleOk(title) && featuredListOk(featured);
 }
 
-const isInt = (value: unknown) => Number.isInteger(value);
+// Безопасное целое: читатель файла (serde_json) помещает время в i64, а 1e300 или 2**60 — «целые» только для double.
+const isInt = (value: unknown) => Number.isSafeInteger(value);
 const urlOrNull = (value: unknown) => value === null || isPublicHttpsUrl(value);
 const text = (value: unknown, min: number, max: number) =>
   typeof value === "string" && value.length >= min && value.length <= max && value.isWellFormed();

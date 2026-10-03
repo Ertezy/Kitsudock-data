@@ -343,3 +343,24 @@ test("метка в тексте ошибки не уводит задачу: о
     assert.deepEqual(second.map((a) => [a.type, a.type === "update" ? a.number : null]), [["update", 7]], "ни открытий, ни закрытий");
   }
 });
+
+test("клиент GitHub: у каждого запроса есть сигнал таймаута, и зависший запрос обрывается", async () => {
+  const signals: (AbortSignal | null | undefined)[] = [];
+  const answering = (async (_url: string, init?: RequestInit) => {
+    signals.push(init?.signal);
+    return new Response("[]");
+  }) as typeof fetch;
+  const gh = createGitHub({ token: "t", repo: "Ertezy/Kitsudock-data", fetch: answering });
+  await gh.listOpen();
+  await gh.lastHumanCommitAt();
+  await gh.open("t", "b");
+  await gh.update(1, "b");
+  await gh.close(1, "c");
+  assert.ok(signals.length >= 7, "список, коммиты, метка, задача, правка, комментарий, закрытие");
+  assert.ok(signals.every((s) => s instanceof AbortSignal && !s.aborted), "на каждом запросе живой сигнал");
+  // Зависший ответ обрывается по таймауту; ошибка уходит вызывающему, как и любая другая.
+  const hanging = ((_url: string, init?: RequestInit) =>
+    new Promise((_, reject) => init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason)))) as typeof fetch;
+  const slow = createGitHub({ token: "t", repo: "Ertezy/Kitsudock-data", fetch: hanging, timeoutMs: 20 });
+  await assert.rejects(slow.listOpen(), (error: Error) => error.name === "TimeoutError");
+});

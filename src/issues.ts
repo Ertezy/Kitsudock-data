@@ -203,8 +203,12 @@ export interface GitHub {
   lastHumanCommitAt(): Promise<number | null>;
 }
 
-export function createGitHub(options: { token: string; repo: string; fetch?: typeof fetch }): GitHub {
+/** Сколько ждать ответа API задач, мс: зависший запрос не должен держать прогон до лимита задачи. */
+export const GITHUB_TIMEOUT_MS = 20_000;
+
+export function createGitHub(options: { token: string; repo: string; fetch?: typeof fetch; timeoutMs?: number }): GitHub {
   const doFetch = options.fetch ?? fetch;
+  const timeoutMs = options.timeoutMs ?? GITHUB_TIMEOUT_MS;
   const base = `https://api.github.com/repos/${options.repo}`;
   const headers = {
     Authorization: `Bearer ${options.token}`,
@@ -217,6 +221,7 @@ export function createGitHub(options: { token: string; repo: string; fetch?: typ
       method,
       headers: body === undefined ? headers : { ...headers, "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok && !okStatuses.includes(res.status)) throw new Error(`GitHub ${method} ${path}: ${res.status}`);
     return res;

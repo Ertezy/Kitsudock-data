@@ -59,3 +59,21 @@ test("смещения", () => {
   assert.equal(parseOffset(""), null);
   assert.equal(parseOffset("GMT+99"), null);
 });
+
+// Форматтер пояса кешируется: ответ от этого не меняется, а зоны не путаются между собой.
+test("местная дата в нескольких поясах: те же моменты при повторах и в любом порядке", () => {
+  const cases: [string, string, number][] = [
+    ["America/Los_Angeles", "August 9, 2026 08:59", utc(2026, 8, 9, 15, 59)],
+    ["America/Los_Angeles", "December 20, 2026 08:59", utc(2026, 12, 20, 16, 59)],
+    ["Asia/Tokyo", "August 9, 2026 08:59", utc(2026, 8, 8, 23, 59)],
+    ["Europe/London", "August 9, 2026 08:59", utc(2026, 8, 9, 7, 59)],
+    ["Europe/London", "December 20, 2026 08:59", utc(2026, 12, 20, 8, 59)],
+    ["Australia/Sydney", "August 9, 2026 08:59", utc(2026, 8, 8, 22, 59)],
+    ["Australia/Sydney", "December 20, 2026 08:59", utc(2026, 12, 19, 21, 59)],
+  ];
+  for (const order of [cases, [...cases].reverse(), [...cases, ...cases]]) {
+    for (const [zone, text, expected] of order) assert.equal(inTimeZone(parseEnglishDate(text)!, zone), expected, `${zone} ${text}`);
+  }
+  assert.throws(() => inTimeZone(parseEnglishDate("August 9, 2026 08:59")!, "Mars/Olympus"), RangeError, "неизвестный пояс по-прежнему ошибка, а не запомненный ответ");
+  assert.throws(() => inTimeZone(parseEnglishDate("August 9, 2026 08:59")!, "Mars/Olympus"), RangeError);
+});

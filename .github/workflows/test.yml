@@ -11,6 +11,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Тесты ничего не пушат, токен в .git/config не нужен.
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: "24.19"

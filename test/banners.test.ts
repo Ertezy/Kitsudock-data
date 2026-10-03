@@ -357,3 +357,21 @@ test("ennead.cc: имя персонажа с одиноким суррогат�
   assert.deepEqual(r.banners.map((x) => x.title), ["Aino \u{1f3b4}"]);
   assert.equal(r.dropped, 2);
 });
+
+test("ennead.cc: время вне безопасных целых и дробное — баннер выброшен и посчитан", () => {
+  const entry = (start: number, end: number) => ({ characters: [{ name: "Aino", rarity: 5 }], start_time: start, end_time: end });
+  const r = parseEnneadBanners(
+    {
+      banners: [
+        entry(2 ** 53, 2 ** 53 + 2),
+        entry(1788256800, 1e21),
+        entry(1e300, 1e301),
+        entry(1788256800.5, 1790060399),
+        entry(1788256800, Number.MAX_SAFE_INTEGER),
+      ],
+    },
+    "genshin",
+  );
+  assert.deepEqual(r.banners.map((b) => b.endsAt), [Number.MAX_SAFE_INTEGER], "безопасное целое проходит");
+  assert.equal(r.dropped, 4);
+});

@@ -608,3 +608,17 @@ test("баннер Kuro с одиноким суррогатом в назван
   );
   assert.deepEqual(banners.map((b) => b.title), ["Good"]);
 });
+
+test("сигнал: сотни тысяч анонсов в списке не роняют поиск самого свежего (нет раскрытия массива в аргументы)", () => {
+  const count = 300_000;
+  const announcements = Array.from({ length: count }, (_, i) => announcement(100_000 + i, NOW - 86400 - (i % 1000)));
+  const newest = announcement(5, NOW - 3600);
+  const twin = announcement(6, NOW - 3600);
+  announcements.push(newest, twin);
+  const facts: Record<string, KuroBannerFact[]> = { "5": [], "6": [] };
+  assert.equal(unreadableAnnouncement(announcements, facts, NOW)?.articleId, 6, "из двух одновременных пустых побеждает больший номер");
+  facts["6"] = [RELEASE_FACT];
+  assert.equal(unreadableAnnouncement(announcements, facts, NOW)?.articleId, 5);
+  facts["5"] = [RELEASE_FACT];
+  assert.equal(unreadableAnnouncement(announcements, facts, NOW), null);
+});

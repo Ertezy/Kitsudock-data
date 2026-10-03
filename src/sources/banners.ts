@@ -238,7 +238,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-const isWholeNumber = (value: unknown): value is number => Number.isInteger(value);
+// Безопасное целое: читатель файла (serde_json) помещает время в i64, а 1e300 или 2**60 — «целые» только для double.
+const isWholeNumber = (value: unknown): value is number => Number.isSafeInteger(value);
 
 /** Календарь ennead.cc — запасной источник. Только баннеры персонажей; название — главные персонажи. */
 export function parseEnneadBanners(
