@@ -403,9 +403,26 @@ ${comparableTitle(banner.title)}`;
 }
 
 /**
+ * Баннеры Kuro без двойников: из двух записей, что считаются одним баннером (одно название и начала в пределах
+ * двух суток), остаётся первая из переданных. Баннеры идут в порядке статей — самая новая статья первой, —
+ * поэтому остаётся запись самой новой статьи, а не та, у которой начало позже.
+ */
+export function withoutTwins(banners: Banner[]): Banner[] {
+  const index = new BannerIndex();
+  const kept: Banner[] = [];
+  for (const banner of banners) {
+    if (index.has(banner)) continue;
+    kept.push(banner);
+    index.add(banner);
+  }
+  return kept;
+}
+
+/**
  * Добавляет баннеры Kuro, которых там ещё нет. Фандом побеждает: у него есть
- * картинка. Из двух одинаковых записей Kuro остаётся первая (анонсы в списке
- * идут от новых к старым).
+ * картинка. Двойников среди самих баннеров Kuro уже свела withoutTwins в
+ * kuroBannersFromMemory (запись самой новой статьи); если они всё же попали
+ * сюда, из двух одинаковых записей Kuro остаётся первая из переданных.
  */
 export function withKuroBanners(hub: HubData, kuro: Banner[]): HubData {
   const banners = [...hub.banners];

@@ -21,6 +21,7 @@ import {
   kuroBannerFacts,
   kuroBanners,
   maintenanceEnd,
+  withoutTwins,
   type Announcement,
   type AnnouncementFacts,
   type KuroBannerFact,
@@ -479,6 +480,8 @@ export const kuroFactsFromMemory = (memory: SourceMemory, announcements: Announc
  * Баннеры Kuro для файла: из памяти, идущие и будущие, самые новые первыми и не больше
  * MAX_BANNERS_PER_GAME — тот же предел, что у баннеров любого другого источника. Так
  * число баннеров Kuro и запросов арта к ним не зависит от того, сколько их отдали статьи.
+ * Сперва двойники сводятся по порядку статей (остаётся запись самой новой статьи), и лишь потом
+ * применяется предел: иначе двойники занимали бы под ним по два места, а побеждало бы более позднее начало.
  */
 export const kuroBannersFromMemory = (memory: SourceMemory, now: number): Banner[] =>
-  newestLive(kuroBanners(kuroFactsFromMemory(memory, memory.kuro), memory.kuroReleases, now), (banner) => banner, now);
+  newestLive(withoutTwins(kuroBanners(kuroFactsFromMemory(memory, memory.kuro), memory.kuroReleases, now)), (banner) => banner, now);

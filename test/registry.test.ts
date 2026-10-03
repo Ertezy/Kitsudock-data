@@ -5,7 +5,7 @@ import { fandom } from "../src/mediawiki.ts";
 import { mergeHub, sectionKey } from "../src/merge.ts";
 import { GAME_IDS, type HubData, type HubGame, type Item, type SourceRun } from "../src/types.ts";
 import { bannerStarts, parseOverrides } from "../src/overrides.ts";
-import { KURO_MENU_URL, kuroArticleJsonUrl, kuroArticleUrl, kuroBanners, unreadableAnnouncement, type KuroBannerFact } from "../src/sources/kuro.ts";
+import { KURO_MENU_URL, kuroArticleJsonUrl, kuroArticleUrl, kuroBanners, unreadableAnnouncement, withKuroBanners, type KuroBannerFact } from "../src/sources/kuro.ts";
 import { KURO_SIGNAL, SOURCES, emptyMemory, fetchKuroAnnouncements, kuroBannersFromMemory, kuroFactsFromMemory } from "../src/sources/registry.ts";
 import { KURO_ARTICLES_BUDGET_MS, MAX_BANNERS_PER_GAME, MAX_KURO_ARTICLES_PER_RUN, MAX_KURO_BANNERS_PER_ARTICLE, RUN_BUDGET_MS } from "../src/validate.ts";
 
@@ -1313,4 +1313,50 @@ test("анонсы Kuro: без отложенных статей порядок
   await fetchKuroAnnouncements({ http, now: NOW, memory });
   assert.deepEqual(requested, [9001, 9101]);
   assert.deepEqual(memory.kuroDeferred, {});
+});
+
+// Двойники баннеров Kuro (то же название, начала в пределах двух суток) сводятся по порядку статей, а не по началу.
+
+const atFact = (title: string, start: number, endsAt: number): KuroBannerFact => ({ title, featured: "Resonator A", start: { kind: "at", at: start }, endsAt });
+const announced = (articleId: number, publishedAt: number) => ({ articleId, publishedAt, url: kuroArticleUrl(articleId) });
+const emptyHub = (): HubData => ({ version: 2, updatedAt: NOW, games: [], codes: [], banners: [], videos: [] });
+
+test("баннеры Kuro из памяти: у двойников из двух анонсов остаётся запись более новой статьи, а не более позднего начала", () => {
+  const memory = emptyMemory();
+  const start = NOW + 86_400;
+  memory.kuro = [announced(9002, NOW - 86_400), announced(9001, NOW - 3 * 86_400)]; // самая новая статья первая
+  memory.kuroFacts = {
+    "9002": [atFact("Twin Banner", start, start + 21 * 86_400)], // новая статья, начало раньше
+    "9001": [atFact("Twin Banner", start + 86_400, start + 22 * 86_400)], // старая статья, начало на сутки позже
+  };
+  const banners = kuroBannersFromMemory(memory, NOW);
+  assert.equal(banners.length, 1);
+  assert.equal(banners[0]!.url, kuroArticleUrl(9002), "запись новой статьи");
+  assert.equal(banners[0]!.startsAt, start);
+  const hub = withKuroBanners(emptyHub(), banners);
+  assert.deepEqual(hub.banners.map((b) => [b.url, b.startsAt]), [[kuroArticleUrl(9002), start]]);
+  // Порядок статей решает и когда начала поменялись местами.
+  memory.kuroFacts = {
+    "9002": [atFact("Twin Banner", start + 86_400, start + 22 * 86_400)],
+    "9001": [atFact("Twin Banner", start, start + 21 * 86_400)],
+  };
+  assert.deepEqual(kuroBannersFromMemory(memory, NOW).map((b) => b.url), [kuroArticleUrl(9002)]);
+});
+
+test("баннеры Kuro из памяти: двойники занимают одно место под пределом баннеров, а не два", () => {
+  assert.equal(MAX_BANNERS_PER_GAME, 50);
+  const memory = emptyMemory();
+  const newest = NOW + 30 * 86_400; // двойники — самые поздние по началу
+  const ends = NOW + 60 * 86_400;
+  memory.kuro = [announced(9002, NOW - 86_400), announced(9001, NOW - 3 * 86_400), announced(8000, NOW - 10 * 86_400)];
+  memory.kuroFacts = {
+    "9002": [atFact("Twin", newest, ends)],
+    "9001": [atFact("Twin", newest + 3_600, ends)],
+    "8000": Array.from({ length: MAX_BANNERS_PER_GAME }, (_, i) => atFact(`Other ${i}`, NOW + (i + 1) * 3_600, ends)), // 50 разных названий
+  };
+  // Названий 51, записей 52: если обрезать до сведения двойников, обоих двойников оставило бы под пределом — вышло бы 49.
+  const banners = kuroBannersFromMemory(memory, NOW);
+  assert.equal(banners.length, MAX_BANNERS_PER_GAME);
+  assert.deepEqual(banners.filter((b) => b.title === "Twin").map((b) => b.url), [kuroArticleUrl(9002)], "один двойник — из более новой статьи");
+  assert.equal(banners.filter((b) => b.title.startsWith("Other")).length, MAX_BANNERS_PER_GAME - 1, "из остальных не влезает самый ранний");
 });
