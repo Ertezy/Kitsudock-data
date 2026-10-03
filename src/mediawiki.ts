@@ -38,8 +38,10 @@ async function call(http: Http, wiki: Wiki, params: Record<string, string>): Pro
   const res = await http.get(`${wiki.api}?${query}`);
   const json = JSON.parse(res.body) as MwError;
   if (json.error) {
-    // Код приходит из чужого ответа как есть: в сообщение идёт только строка и не длиннее ERROR_CODE_MAX.
-    const code = typeof json.error.code === "string" ? json.error.code.slice(0, ERROR_CODE_MAX) : "ошибка";
+    // Код приходит из чужого ответа как есть: в сообщение идёт только строка или конечное число,
+    // и не длиннее ERROR_CODE_MAX знаков.
+    const raw = json.error.code;
+    const code = typeof raw === "string" || (typeof raw === "number" && Number.isFinite(raw)) ? String(raw).slice(0, ERROR_CODE_MAX) : "ошибка";
     throw new Error(`MediaWiki: ${code}`);
   }
   return json;

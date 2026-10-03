@@ -49,29 +49,63 @@ export function formatTime(unix: number): string {
 /** Самый длинный текст ошибки в журнале и в теле задачи. */
 export const ERROR_TEXT_MAX = 200;
 
+const ZWSP = "\u200B";
+
 /**
  * Текст ошибки из чужого ответа (сообщение разбора JSON цитирует кусок ответа, код ошибки вики
- * приходит как есть) годится в журнал и в задачу только после чистки: одна строка, нулевой пробел
- * после каждой «@» (иначе GitHub упомянет постороннего человека), «::» в начале обезврежено
- * (строка журнала запуска с него читается как команда Actions), длина не больше ERROR_TEXT_MAX.
- * Повторная чистка текст не меняет.
+ * приходит как есть) годится в журнал и в задачу только после чистки:
+ * - невидимые знаки форматирования (Cf: переключатели направления текста, нулевой пробел и подобные)
+ *   убраны, а пробельные и управляющие свёрнуты в один пробел: получается одна строка;
+ * - после каждой «@» стоит нулевой пробел (иначе GitHub упомянет постороннего человека);
+ * - после каждой «<» тоже, а «-->» разорвано им же: в тексте не бывает ни «<!--», ни «-->», и
+ *   метку задачи (withKey) из чужого текста не подделать;
+ * - «::» в начале обезврежено (строка журнала запуска с него читается как команда Actions);
+ * - длина не больше ERROR_TEXT_MAX, считая добавленные нулевые пробелы.
+ * Нулевые пробелы ставит только эта функция. Текст берётся по частям, и часть с её нулевым пробелом
+ * не режется пополам, поэтому повторная чистка результат не меняет.
  */
 export function cleanErrorText(text: unknown): string {
-  let line = String(text)
+  const plain = String(text)
     .toWellFormed()
+    .replace(/\p{Cf}/gu, "")
     .replace(/[\s\p{Cc}]+/gu, " ")
-    .trim()
-    .replace(/@(?!\u200B)/g, "@\u200B");
-  if (line.startsWith("::")) line = `:\u200B${line.slice(1)}`;
-  // Одинокие половины суррогатных пар заменены выше, а обрезка не оставляет половину пары и пробел на конце:
-  // так итог — правильная строка, и повторная чистка его не меняет.
-  return line.slice(0, ERROR_TEXT_MAX).replace(/[\uD800-\uDBFF]$/, "").trimEnd();
+    .trim();
+  let out = "";
+  let at = 0;
+  while (at < plain.length) {
+    let read: string;
+    let put: string;
+    if (plain.startsWith("-->", at)) {
+      read = "-->";
+      put = `--${ZWSP}>`;
+    } else if (at === 0 && plain.startsWith("::")) {
+      read = ":";
+      put = `:${ZWSP}`;
+    } else {
+      read = String.fromCodePoint(plain.codePointAt(at)!);
+      put = read === "@" || read === "<" ? read + ZWSP : read;
+    }
+    if (out.length + put.length > ERROR_TEXT_MAX) break;
+    out += put;
+    at += read.length;
+  }
+  return out.trimEnd();
 }
+
+/**
+ * Текст ошибки для тела задачи: в строчном коде, где «#123», «org/repo#9», ссылки, теги и разметка
+ * не работают. Обратная кавычка заменена на «ʼ»: иначе текст закрыл бы код сам. Пустой текст — «—».
+ */
+const errorSpan = (text: unknown): string => "`" + (cleanErrorText(text).replaceAll("`", "ʼ") || "—") + "`";
 
 export const withKey = (key: string, text: string) => `${text}\n\n<!-- collector-key: ${key} -->`;
 
+/**
+ * Метка задачи — только та, что withKey дописывает последней. Метка из середины тела (кусок чужого
+ * текста, не прошедшего чистку) не считается: иначе задача источника читалась бы как чужая.
+ */
 export function keyOf(body: string): string | null {
-  return /<!-- collector-key: ([^ ]+) -->/.exec(body)?.[1] ?? null;
+  return /<!-- collector-key: (\S+) -->\s*$/.exec(body)?.[1] ?? null;
 }
 
 export function planIssues(input: IssueInputs): IssueAction[] {
@@ -97,7 +131,7 @@ export function planIssues(input: IssueInputs): IssueAction[] {
       ? [
           `Источник: ${label}`,
           // Состояние живёт в кеше между запусками: в нём мог остаться текст, записанный до чистки.
-          `Что сломалось: ${cleanErrorText(f.lastError)}`,
+          `Что сломалось: ${errorSpan(f.lastError)}`,
           `Не работает с: ${formatTime(f.since)}`,
           `Последняя попытка: ${formatTime(f.lastAttempt)}`,
           `Запуск: ${input.runUrl}`,
@@ -116,7 +150,7 @@ export function planIssues(input: IssueInputs): IssueAction[] {
     }
   }
 
-  const list = (errors: string[]) => errors.map((e) => `- ${cleanErrorText(e)}`).join("\n");
+  const list = (errors: string[]) => errors.map((e) => `- ${errorSpan(e)}`).join("\n");
   keep(
     "validation",
     input.validationErrors.length > 0,

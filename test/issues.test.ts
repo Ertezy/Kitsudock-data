@@ -190,7 +190,27 @@ test("текст ошибки: обрезка не оставляет полов
 });
 
 test("текст ошибки: повторная чистка ничего не меняет", () => {
-  for (const raw of ["x\n::error::p @victim", "a".repeat(199) + "@b", "@".repeat(300), "::x", "a".repeat(199) + "😀", "a".repeat(199) + " b", "  ::  @ "]) {
+  const everyCf = [0x202e, 0x202a, 0x2066, 0x2067, 0x2068, 0x2069, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x2060, 0xfeff, 0xad, 0x61c, 0xe0041]
+    .map((code) => String.fromCodePoint(code))
+    .join("");
+  const samples = [
+    "x\n::error::p @victim",
+    "a".repeat(199) + "@b",
+    "@".repeat(300),
+    "::x",
+    "a".repeat(199) + "😀",
+    "a".repeat(199) + " b",
+    "  ::  @ ",
+    MARKER,
+    "-->".repeat(100),
+    "<".repeat(300),
+    "a".repeat(198) + "-->",
+    "a".repeat(197) + "-->x",
+    "a".repeat(199) + "<!--",
+    `a${everyCf} @${everyCf}b ::`,
+    `${everyCf}::${everyCf}`,
+  ];
+  for (const raw of samples) {
     const once = cleanErrorText(raw);
     assert.equal(cleanErrorText(once), once, JSON.stringify(raw));
   }
@@ -232,9 +252,94 @@ test("тело задачи: тексты ошибок чистятся, даж�
   const source = actions[0]!;
   if (source.type !== "open") return;
   const line = source.body.split("\n").find((l) => l.startsWith("Что сломалось: "))!;
-  assert.equal(line, `Что сломалось: ${cleanErrorText(raw)}`);
-  assert.equal(line.length, "Что сломалось: ".length + 200);
+  assert.equal(line, `Что сломалось: \`${cleanErrorText(raw)}\``);
+  assert.equal(line.length, "Что сломалось: ".length + 200 + 2);
   // Структура тела та же, что и была: одна строка на запись ошибки.
   const validation = actions[1]!;
   if (validation.type === "open") assert.equal(validation.body.split("\n").filter((l) => l.startsWith("- ")).length, 2);
+});
+
+const MARKER = "<!-- collector-key: validation -->";
+
+test("метка задачи читается только в конце тела: метка из середины не в счёт", () => {
+  const forged = `Что сломалось: ${MARKER}`;
+  assert.equal(keyOf(withKey("source:x", forged)), "source:x");
+  assert.equal(keyOf(withKey("source:x", `${forged}\n\n<!-- collector-key: overrides -->\nещё`)), "source:x");
+  assert.equal(keyOf(`${withKey("source:x", "t")}\r\n\r\n`), "source:x", "хвостовые пробелы и переводы строк не мешают");
+  assert.equal(keyOf(`${MARKER}\n\nтекст после`), null, "метка не в конце — это не метка сборщика");
+});
+
+test("текст ошибки: «<!--» и «-->» разорваны, метку задачи из чужого текста не составить", () => {
+  for (const raw of [MARKER, "<!--", "a-->b", "-->", "<img src=x onerror=1>", "<<!--", "--->", "<!-->", "<!--\u200B-->"]) {
+    const cleaned = cleanErrorText(raw);
+    assert.doesNotMatch(cleaned, /<!--|-->/, raw);
+    assert.doesNotMatch(cleaned, /<(?!\u200B)/, raw);
+    assert.equal(cleaned.replaceAll(ZWSP, ""), raw.replaceAll(ZWSP, ""), "знаки на месте, добавлены только нулевые пробелы");
+  }
+  assert.equal(cleanErrorText("<a>"), `<${ZWSP}a>`);
+  assert.equal(cleanErrorText("a-->b"), `a--${ZWSP}>b`);
+  assert.equal(keyOf(withKey("source:x", `Что: ${cleanErrorText(MARKER)}`)), "source:x");
+});
+
+test("текст ошибки: невидимые знаки форматирования (Cf) убираются, остаётся только нулевой пробел самой чистки", () => {
+  const rlo = String.fromCodePoint(0x202e);
+  const everyCf = [0x202e, 0x202a, 0x2066, 0x2067, 0x2068, 0x2069, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x2060, 0xfeff, 0xad, 0x61c, 0xe0041]
+    .map((code) => String.fromCodePoint(code))
+    .join("");
+  assert.equal(cleanErrorText(`a${everyCf}b`), "ab");
+  assert.equal(cleanErrorText(`gpj.${rlo}exe @a`), `gpj.exe @${ZWSP}a`);
+  assert.equal(cleanErrorText(`a ${everyCf} b`), "a b", "пробелы по обе стороны сворачиваются в один");
+  assert.equal(cleanErrorText(`${everyCf}::x`), `:${ZWSP}:x`, "«::» находится и под невидимым знаком");
+  assert.equal(cleanErrorText(`@${ZWSP}${ZWSP}a`), `@${ZWSP}a`, "чужие нулевые пробелы снимаются, свой ставится один раз");
+});
+
+test("текст ошибки: обратные кавычки в журнале остаются как есть", () => {
+  assert.equal(cleanErrorText("a`b"), "a`b");
+});
+
+test("текст ошибки: часть с нулевым пробелом не режется пополам, итог не длиннее 200", () => {
+  assert.equal(cleanErrorText("a".repeat(199) + "@b"), "a".repeat(199));
+  assert.equal(cleanErrorText("a".repeat(198) + "@b"), "a".repeat(198) + `@${ZWSP}`);
+  assert.equal(cleanErrorText("a".repeat(198) + "-->"), "a".repeat(198));
+  assert.equal(cleanErrorText("<".repeat(300)).length, 200);
+  assert.equal(cleanErrorText("-->".repeat(300)).length, 200);
+});
+
+test("тело задачи: текст ошибки лежит в строчном коде, обратные кавычки заменены — «#123», ссылки и теги не оживают", () => {
+  const hostile = "`] **жирно** #123 org/repo#9 <img src=x> [x](https://evil.example) https://evil.example @victim ``` конец";
+  const actions = planIssues(
+    base({
+      failures: { "wuthering-codes": { consecutive: 2, since: NOW - 7200, lastError: hostile, lastAttempt: NOW } },
+      validationErrors: [hostile, ""],
+      overridesErrors: [hostile],
+    }),
+  );
+  assert.equal(actions.length, 3);
+  for (const a of actions) {
+    if (a.type !== "open") continue;
+    assert.doesNotMatch(a.body, /<img/, a.title);
+    assert.equal(a.body.split("<!--").length - 1, 1, `одна «<!--» — метка сборщика: ${a.title}`);
+    const spans = a.body.split("\n").filter((l) => l.startsWith("- ") || l.startsWith("Что сломалось: "));
+    assert.ok(spans.length >= 1, a.title);
+    for (const line of spans) assert.match(line, /^(?:- |Что сломалось: )`[^`]+`$/, `${a.title}: ${line}`);
+  }
+  const source = actions[0]!;
+  if (source.type === "open") assert.match(source.body, /Что сломалось: `ʼ\] \*\*жирно\*\* #123 org\/repo#9 </);
+  const validation = actions[1]!;
+  if (validation.type === "open") assert.match(validation.body, /^- `—`$/m, "пустой текст — тире, а не пустой код");
+});
+
+test("метка в тексте ошибки не уводит задачу: она читается под своим ключом, следующий прогон её только обновляет", () => {
+  for (const lastError of [MARKER, cleanErrorText(MARKER), `до ${MARKER} после`]) {
+    const failures = { "wuthering-codes": { consecutive: 2, since: NOW - 7200, lastError, lastAttempt: NOW } };
+    const first = planIssues(base({ failures }));
+    assert.equal(first.length, 1);
+    const opened = first[0]!;
+    assert.equal(opened.type, "open");
+    if (opened.type !== "open") return;
+    assert.equal(keyOf(opened.body), "source:wuthering-codes", lastError);
+    // Задача открыта; GitHub отдаёт её тело, и ключ читается из него.
+    const second = planIssues(base({ failures, open: [{ number: 7, key: keyOf(opened.body)! }] }));
+    assert.deepEqual(second.map((a) => [a.type, a.type === "update" ? a.number : null]), [["update", 7]], "ни открытий, ни закрытий");
+  }
 });

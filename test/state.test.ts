@@ -337,3 +337,9 @@ test("строка о запуске в журнале: у поломки тек
   assert.equal(runStatus({ kind: "skipped" }), "skipped");
   assert.equal(runStatus({ kind: "ok", items: [], parsed: 0, dropped: 0 }), "ok");
 });
+
+test("счётчик неудач: метка задачи в тексте ошибки не доезжает до lastError", () => {
+  const failures: Record<string, Failure> = {};
+  recordRun(failures, "a", { kind: "broken", error: "MediaWiki: <!-- collector-key: validation -->" }, NOW);
+  assert.doesNotMatch(failures.a!.lastError, /<!--|-->/);
+});

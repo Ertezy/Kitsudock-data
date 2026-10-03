@@ -150,3 +150,24 @@ test("ошибка API: код в сообщении обрезан до 100 з�
   );
   await assert.rejects(pageWikitext(fakeHttp({ wikitext: { error: {} } }).http, WUWA, "X"), /^Error: MediaWiki: ошибка$/);
 });
+
+test("ошибка API: числовой код печатается числом, остальные виды — словом «ошибка»", async () => {
+  const withBody = (body: string): Http => ({
+    async get() {
+      return { status: 200, body, validators: {} };
+    },
+  });
+  const message = async (body: string) => {
+    try {
+      await pageWikitext(withBody(body), WUWA, "X");
+      return "ошибки нет";
+    } catch (error) {
+      return (error as Error).message;
+    }
+  };
+  assert.equal(await message('{"error":{"code":503}}'), "MediaWiki: 503");
+  assert.equal(await message('{"error":{"code":0}}'), "MediaWiki: 0");
+  assert.equal(await message('{"error":{"code":1.5}}'), "MediaWiki: 1.5");
+  assert.equal(await message('{"error":{"code":1e999}}'), "MediaWiki: ошибка", "бесконечность — не число");
+  for (const code of ["true", "null", "[1,2]", '{"a":1}']) assert.equal(await message(`{"error":{"code":${code}}}`), "MediaWiki: ошибка", code);
+});
