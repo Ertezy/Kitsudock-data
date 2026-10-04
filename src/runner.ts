@@ -28,8 +28,11 @@ export interface RunnerInput {
 
 /**
  * Источники лентами: источники одной ленты (общий хост) идут по очереди, остальные — каждый сам по себе.
- * В ленте сперва идут источники без неудач, а тот, что не отвечал в прошлый раз, — последним: после сбоя
+ * В ленте сперва идут источники без неудач, а те, что не отвечали в прошлый раз, — после них: после сбоя
  * связи остаток ленты пропускается, и вечно не отвечающий источник иначе не пускал бы к хосту остальных.
+ * Источники с неудачами идут по давности последней попытки, самая давняя первой: пропущенный из-за чужого сбоя
+ * связи не получает новой записи о попытке и в следующий прогон оказывается впереди, так что выздоровевший
+ * очищается, а не пропускается вечно за источником, который не отвечает всегда (так же чередуются kuroDeferred).
  */
 function lanesOf(sources: SourceDef[], failures: Record<string, Failure>): SourceDef[][] {
   const lanes = new Map<string, SourceDef[]>();
@@ -41,12 +44,15 @@ function lanesOf(sources: SourceDef[], failures: Record<string, Failure>): Sourc
   }
   return [...lanes.values()].map((lane) => [
     ...lane.filter((source) => failures[source.id] === undefined),
-    ...lane.filter((source) => failures[source.id] !== undefined),
+    ...lane.filter((source) => failures[source.id] !== undefined).sort((a, b) => failures[a.id]!.lastAttempt - failures[b.id]!.lastAttempt),
   ]);
 }
 
 export function createRunner({ ctx, lastRun, failures, now, log = console.log }: RunnerInput) {
   const skipped = (reason: string): SourceRun<Item> => ({ kind: "skipped", reason });
+
+  /** Сколько источников пропущено из-за срока прогона: не начато в срок или остановлено им посреди работы. */
+  let overrun = 0;
 
   /** Почему источник нельзя начинать прямо сейчас (срок вышел, на хосте был сбой связи) — или null. */
   const blocker = (hostSilent: boolean): string | null => (timeIsUp(ctx) ? OUT_OF_TIME : hostSilent ? HOST_SILENT : null);
@@ -65,11 +71,13 @@ export function createRunner({ ctx, lastRun, failures, now, log = console.log }:
         const run = skipped(reason);
         runs.set(key, run);
         log(`${source.id}: ${runStatus(run)}`);
+        if (reason === OUT_OF_TIME) overrun++;
         continue;
       }
       const run = await source.run(ctx);
       // Источник, которому не хватило времени, не отмечается: он пойдёт в следующем прогоне, а не через свой период.
       if (run.kind !== "skipped") lastRun[source.id] = now;
+      else if (run.reason === OUT_OF_TIME) overrun++;
       recordRun(failures, source.id, run, now);
       runs.set(key, run);
       log(`${source.id}: ${runStatus(run)}`);
@@ -92,6 +100,7 @@ export function createRunner({ ctx, lastRun, failures, now, log = console.log }:
       if (reason !== null) {
         // Результат раздела остаётся результатом основного источника: прошлые данные на месте.
         log(`${source.id} (запасной): ${runStatus(skipped(reason))}`);
+        if (reason === OUT_OF_TIME) overrun++;
         continue;
       }
       const run = await source.run(ctx);
@@ -119,7 +128,16 @@ export function createRunner({ ctx, lastRun, failures, now, log = console.log }:
       if (!isDue(lastRun[id], everyHours, now)) return false;
       if (!timeIsUp(ctx)) return true;
       log(`${id}: ${runStatus(skipped(OUT_OF_TIME))}`);
+      overrun++;
       return false;
+    },
+
+    /**
+     * Строка для итога прогона, когда источники пропущены из-за срока (null — таких нет): хроническая нехватка
+     * времени видна в журнале и без задачи — задачу о поломке из-за неё не открывают.
+     */
+    overrunReport(): string | null {
+      return overrun > 0 ? `пропущено из-за срока: ${overrun}` : null;
     },
   };
 }

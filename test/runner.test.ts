@@ -186,6 +186,64 @@ test("в ленте сперва идут источники без неудач
   assert.equal(e.failures["src-0"]!.consecutive, 4);
 });
 
+test("в ленте несколько источников с неудачами: пропущенный по сбою связи идёт вперёд, поэтому выздоровевший очищается, а не голодает", async () => {
+  const failed = (lastAttempt: number): Failure => ({ consecutive: 3, since: NOW - 10_000, lastError: "таймаут", lastAttempt });
+  const failures: Record<string, Failure> = { "src-0": failed(NOW - 7200), "src-1": failed(NOW - 7200) }; // равны — порядок реестра
+  const ran: string[] = [];
+  const lane = (n: number, run: SourceRun<Item>) => fake(n, () => (ran.push(`src-${n}`), run), { lane: "host" });
+  // Первый всегда не отвечает, второй уже здоров, третий здоров всегда.
+  const sources = [lane(0, timeout), lane(1, ok()), lane(2, ok())];
+  const first = env(0, {}, failures);
+  await first.runner.runSources(sources);
+  assert.deepEqual(ran, ["src-2", "src-0"], "первый не ответил — второй пропущен, его запись не тронута");
+  assert.equal(failures["src-0"]!.lastAttempt, NOW);
+  assert.equal(failures["src-1"]!.lastAttempt, NOW - 7200);
+  ran.length = 0;
+  const second = env(0, {}, failures);
+  await second.runner.runSources(sources);
+  assert.deepEqual(ran, ["src-2", "src-1", "src-0"], "давно не пробовавшийся второй идёт раньше только что не ответившего первого");
+  assert.equal("src-1" in failures, false, "выздоровевший очищен — его задача закроется");
+  assert.equal(failures["src-0"]!.consecutive, 5);
+});
+
+test("пропущено из-за срока: считаются источники ленты, запасные и одиночные; сбой связи, не наступивший час и обычный прогон — нет", async () => {
+  const quiet = env();
+  await quiet.runner.runSources([fake(0, () => ok()), fake(1, () => ok(), { lane: "host" }), fake(2, () => ok(), { lane: "host" })]);
+  assert.equal(quiet.runner.overrunReport(), null, "в срок — строки нет");
+
+  const lane = env();
+  const slow = (): SourceRun<Item> => ((lane.t.at += 4 * MINUTE), ok());
+  await lane.runner.runSources([0, 1, 2, 3, 4].map((n) => fake(n, slow, { lane: "host" })));
+  assert.equal(lane.runner.overrunReport(), "пропущено из-за срока: 2");
+
+  const silent = env(); // сбой связи — не срок
+  await silent.runner.runSources([fake(0, () => timeout, { lane: "host" }), fake(1, () => ok(), { lane: "host" })]);
+  assert.equal(silent.runner.overrunReport(), null);
+
+  const notDue = env(0, { "src-0": NOW - 60 });
+  await notDue.runner.runSources([fake(0, () => ok())]);
+  assert.equal(notDue.runner.overrunReport(), null, "час не настал — не срок");
+
+  const inside = env(); // источник сам вернул skipped из-за срока
+  await inside.runner.runSources([fake(0, () => ({ kind: "skipped", reason: "вышло время прогона" })), fake(1, () => ({ kind: "skipped" }))]);
+  assert.equal(inside.runner.overrunReport(), "пропущено из-за срока: 1");
+
+  const fallbacks = env();
+  const main = fake(0, () => ((fallbacks.t.at = RUN_BUDGET_MS + 1), { kind: "broken", error: "ответ 500" }));
+  await fallbacks.runner.runSources([main, fake(0, () => ok(), { id: "src-0-fallback", fallback: true })]);
+  assert.equal(fallbacks.runner.overrunReport(), "пропущено из-за срока: 1", "запасной, не начатый из-за срока");
+
+  const singles = env(0, { a: NOW - 60 });
+  singles.runner.shouldStart("a", 1); // час не настал
+  singles.runner.shouldStart("b", 1);
+  assert.equal(singles.runner.overrunReport(), null);
+  singles.t.at = RUN_BUDGET_MS;
+  singles.runner.shouldStart("a", 1);
+  singles.runner.shouldStart("b", 1);
+  singles.runner.shouldStart("c", 1);
+  assert.equal(singles.runner.overrunReport(), "пропущено из-за срока: 2", "считаются только те, которым пора");
+});
+
 test("отбор одиночных источников: час не настал — молча нет; срок вышел — нет и строка в журнале", () => {
   const e = env(0, { a: NOW - 60 });
   assert.equal(e.runner.shouldStart("a", 1), false, "час не настал");

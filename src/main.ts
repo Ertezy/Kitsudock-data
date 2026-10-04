@@ -243,4 +243,7 @@ report.push(
   `правки: ${overridesErrors.length === 0 ? "в порядке" : overridesErrors.map((e) => cleanErrorText(e)).join(" | ")}`,
   `выкладка: ${publish ? "да" : "нет"}${dryRun ? " (пробный запуск, файл в public/hub.json)" : ""}`,
 );
+// Задачу из-за нехватки времени не открывают, поэтому хроническая нехватка видна хотя бы в итоге прогона.
+const overrun = runner.overrunReport();
+if (overrun !== null) report.push(overrun);
 console.log(report.join("\n"));
