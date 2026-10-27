@@ -14,7 +14,7 @@ export interface MergeInput {
   now: number;
 }
 
-/** Язык видео из прошлого файла: у записей до этапа 6 поля нет — это английские. */
+/** Язык видео из прошлого файла: у записей без поля языка — английские. */
 const langOf = (item: Item): VideoLang => (item as Partial<Video>).lang ?? "en";
 
 function sectionItems(input: MergeInput, game: GameId, section: Section, lang?: VideoLang): Item[] {

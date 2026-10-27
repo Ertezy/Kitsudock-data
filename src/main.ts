@@ -1,4 +1,4 @@
-// Один запуск сборщика целиком (спека §3).
+// Один запуск сборщика целиком.
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { timeIsUp } from "./deadline.ts";
@@ -84,7 +84,7 @@ const catalog = JSON.parse(readFileSync("catalog.json", "utf8")) as HubGame[];
 
 // Источники работают с копией памяти и отметок времени: если итог не пройдёт проверку,
 // state.memory и state.lastRun останутся прежними и источники честно перечитаются заново
-// на следующем прогоне, а не будут считаться «уже обработанными» (спека §3).
+// на следующем прогоне, а не будут считаться «уже обработанными».
 const memory = structuredClone(state.memory);
 const lastRun: Record<string, number> = { ...state.lastRun };
 // Срок прогона: performance.now() идёт от старта процесса, поэтому срок — просто RUN_BUDGET_MS (см. deadline.ts).

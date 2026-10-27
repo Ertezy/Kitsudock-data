@@ -1,4 +1,4 @@
-// Файл правок владельца (спека §5.4): добавить код или баннер, скрыть ошибочную запись.
+// Файл правок владельца: добавить код или баннер, скрыть ошибочную запись.
 
 import { atOffset, parseIsoLike, parseOffset } from "./time.ts";
 import { GAME_IDS, type Banner, type Code, type GameId, type HubData } from "./types.ts";

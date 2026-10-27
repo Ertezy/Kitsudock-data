@@ -1,6 +1,6 @@
-// Ленты YouTube официальных каналов игр — английских и японских (спека
-// этапа 6 §3.1). Канал сверяется по идентификатору. У Endfield английский
-// канал — @ArknightsEndfieldEN: лента основного @ArknightsEndfield пуста.
+// Ленты YouTube официальных каналов игр — английских и японских.
+// Канал сверяется по идентификатору. У Endfield английский канал —
+// @ArknightsEndfieldEN: лента основного @ArknightsEndfield пуста.
 
 import type { GameId, Video, VideoLang } from "../types.ts";
 import { isPublicHttpsUrl, videoTitleOk, youtubeUrlOk } from "../validate.ts";

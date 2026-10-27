@@ -1,7 +1,6 @@
 // Фоны официального лаунчера HoYoPlay для Genshin Impact, Honkai: Star Rail и Zenless
-// Zone Zero (спека приложения docs/specs/2026-10-02-launcher-backgrounds-design.md, §2).
-// Берутся только ссылки на текущий фон: картинку и, если есть, видео. Ни картинки,
-// ни видео нигде не хранятся.
+// Zone Zero. Берутся только ссылки на текущий фон: картинку и, если есть, видео. Ни
+// картинки, ни видео нигде не хранятся.
 
 import type { Http } from "../http.ts";
 import type { GameBackground, GameId, HubData } from "../types.ts";

@@ -31,7 +31,7 @@ export interface Banner {
   url: string | null;
 }
 
-/** Языки видео: английский — основной, японский — по выбору в приложении (спека этапа 6 §3). */
+/** Языки видео: английский — основной, японский — по выбору в приложении. */
 export type VideoLang = "en" | "ja";
 export const VIDEO_LANGS: readonly VideoLang[] = ["en", "ja"];
 

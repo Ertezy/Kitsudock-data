@@ -1,5 +1,5 @@
 // Состояние между запусками. Лежит в кеше GitHub Actions, в репозиторий не
-// попадает: данные не коммитятся (спека §3).
+// попадает: данные не коммитятся.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -137,7 +137,7 @@ export function recordRun(failures: Record<string, Failure>, sourceId: string, r
 export const runStatus = (run: SourceRun<Item>): string =>
   run.kind === "broken" ? `сломан — ${cleanErrorText(run.error)}` : run.kind === "skipped" && run.reason ? `skipped — ${run.reason}` : run.kind;
 
-/** Убирает записи об источниках, которых больше нет (спека этапа 6 §3.1).
+/** Убирает записи об источниках, которых больше нет.
  *  Иначе старая неудача держала бы задачу о поломке открытой вечно: удалить
  *  её может только удачный опрос того же источника. */
 export function pruneState(state: State, knownIds: ReadonlySet<string>): string[] {

@@ -1,4 +1,4 @@
-// Оценка источника за запуск (спека §5.1) и сгоревшее (§5.2).
+// Оценка источника за запуск и сгоревшее.
 
 import type { Banner, Code, Item, Section, SourceRun } from "./types.ts";
 import { MAX_CODES_PER_GAME } from "./validate.ts";
