@@ -13,7 +13,7 @@ export const HOYOPLAY_URL =
 export const LAUNCHER_ART = { id: "hoyoplay-art", label: "фоны официального лаунчера HoYoPlay", everyHours: 6 } as const;
 
 /** Игры HoYoPlay по их коду в лаунчере. */
-const BIZ: Record<string, GameId> = { hk4e_global: "genshin", hkrpg_global: "hsr", nap_global: "zzz" };
+export const BIZ: Record<string, GameId> = { hk4e_global: "genshin", hkrpg_global: "hsr", nap_global: "zzz" };
 
 const IMAGE_FILE = /^https:\/\/[^?#\s]+\.(?:webp|png|jpe?g)$/i;
 const VIDEO_FILE = /^https:\/\/[^?#\s]+\.(?:webm|mp4)$/i;

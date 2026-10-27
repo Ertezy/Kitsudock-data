@@ -1,8 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { Redirects } from "../src/http.ts";
+import { StatusError, type Http, type HttpResponse, type Redirects } from "../src/http.ts";
+import { HOYOPLAY_URL } from "../src/sources/launcherArt.ts";
+import { emptyMemory } from "../src/sources/registry.ts";
 import {
   MANUAL_SOCIALS,
+  contentUrl,
+  fetchSocials,
+  parseHoyoplayGameIds,
   SOCIAL_KINDS,
   SOCIALS_MAX,
   classifySocials,
@@ -262,4 +267,135 @@ test("соцсети ставятся играм файла: из памяти �
 test("соцсети: память без списков не создаёт поле", () => {
   const hub = hubOf("zzz");
   assert.equal(withSocials(hub, { zzz: {} }), hub);
+});
+
+// Сбор целиком: ответы HoYoPlay подменяются, настоящих запросов нет.
+
+const basicInfo = (...entries: [string, string][]) => ({ retcode: 0, message: "OK", data: { game_info_list: entries.map(([biz, id]) => ({ game: { biz, id } })) } });
+const IDS = basicInfo(["hk4e_global", "gid-genshin"], ["hkrpg_global", "gid-hsr"], ["nap_global", "gid-zzz"], ["bh3_global", "gid-honkai"]);
+const GAMES = ["genshin", "hsr", "zzz"] as const;
+const body = (value: unknown): HttpResponse => ({ status: 200, body: JSON.stringify(value), validators: {} });
+
+/** Http по таблице «адрес → ответ или ошибка» и переходы коротких ссылок; журнал всех запросов подряд. */
+function fakeNet(replies: Record<string, unknown>, redirectMap: Record<string, string | Error | null> = {}) {
+  const calls: string[] = [];
+  const http: Http = {
+    async get(url, ...rest) {
+      calls.push(url);
+      assert.deepEqual(rest, [], "условные заголовки не нужны: тело нужно целиком");
+      const next = replies[url];
+      if (next instanceof Error) throw next;
+      if (next === undefined) throw new StatusError(404, url);
+      return body(next);
+    },
+  };
+  const redirects: Redirects = {
+    async location(url) {
+      calls.push(url);
+      const target = redirectMap[url];
+      if (target instanceof Error) throw target;
+      return target ?? null;
+    },
+  };
+  return { net: { ...http, ...redirects }, calls };
+}
+
+/** Ответ getGameContent из одних прямых ссылок. */
+const content = (...links: string[]) => reply(links.map((link) => linkEntry(link)));
+const allReplies = (): Record<string, unknown> => {
+  const replies: Record<string, unknown> = { [HOYOPLAY_URL]: IDS };
+  for (const game of GAMES) {
+    replies[contentUrl(`gid-${game}`, "ru-ru")] = content(`https://vk.com/${game}ru`, `https://t.me/${game}ru`);
+    replies[contentUrl(`gid-${game}`, "en-us")] = content(`https://x.com/${game}en`);
+  }
+  return replies;
+};
+
+test("номера игр: по game.biz из getAllGameBasicInfo, чужие игры и мусор пропускаются; не та форма — null", () => {
+  assert.deepEqual(parseHoyoplayGameIds(IDS), { genshin: "gid-genshin", hsr: "gid-hsr", zzz: "gid-zzz" });
+  assert.deepEqual(parseHoyoplayGameIds({ retcode: 0, data: { game_info_list: [null, {}, { game: { biz: "nap_global", id: 5 } }, { game: { biz: "nap_global", id: "" } }] } }), {});
+  assert.equal(parseHoyoplayGameIds({ retcode: 1, data: { game_info_list: [] } }), null);
+  assert.equal(parseHoyoplayGameIds({ retcode: 0, data: {} }), null);
+  assert.equal(parseHoyoplayGameIds("x"), null);
+});
+
+test("адрес getGameContent: лаунчер, номер игры и язык", () => {
+  assert.equal(
+    contentUrl("gid-zzz", "ru-ru"),
+    "https://sg-hyp-api.hoyoverse.com/hyp/hyp-connect/api/getGameContent?launcher_id=VYTpXlbWo8&game_id=gid-zzz&language=ru-ru",
+  );
+});
+
+test("сбор: три игры на двух языках, запросы подряд, соцсети в памяти по играм и языкам", async () => {
+  const f = fakeNet(allReplies());
+  const memory = emptyMemory();
+  assert.deepEqual(await fetchSocials(f.net, memory), { ok: true });
+  assert.deepEqual(memory.socials.genshin, { ru: [social("vk", "https://vk.com/genshinru"), social("telegram", "https://t.me/genshinru")], en: [social("x", "https://x.com/genshinen")] });
+  assert.deepEqual(Object.keys(memory.socials), ["genshin", "hsr", "zzz"]);
+  assert.deepEqual(f.calls, [HOYOPLAY_URL, ...GAMES.flatMap((game) => [contentUrl(`gid-${game}`, "ru-ru"), contentUrl(`gid-${game}`, "en-us")])]);
+});
+
+test("сбор: короткие ссылки определяются по переходу, запросы за ними идут подряд внутри списка", async () => {
+  const replies = allReplies();
+  replies[contentUrl("gid-hsr", "ru-ru")] = reply([hubEntry("https://www.hoyolab.com/home?lang=ru-ru"), linkEntry("https://hoyo.link/aaaa1111"), linkEntry("https://hoyo.link/wa000002")]);
+  const f = fakeNet(replies, { "https://hoyo.link/aaaa1111": "https://discord.com/invite/example", "https://hoyo.link/wa000002": "https://api.whatsapp.com/send" });
+  const memory = emptyMemory();
+  assert.deepEqual(await fetchSocials(f.net, memory), { ok: true });
+  assert.deepEqual(memory.socials.hsr!.ru, [social("hoyolab", "https://www.hoyolab.com/home?lang=ru-ru"), social("discord", "https://hoyo.link/aaaa1111")]);
+  const at = f.calls.indexOf(contentUrl("gid-hsr", "ru-ru"));
+  assert.deepEqual(f.calls.slice(at, at + 3), [contentUrl("gid-hsr", "ru-ru"), "https://hoyo.link/aaaa1111", "https://hoyo.link/wa000002"]);
+});
+
+test("сбор: сбой одного списка оставляет его прошлое значение, остальные обновляются, итог — ошибка", async () => {
+  const replies = allReplies();
+  replies[contentUrl("gid-genshin", "en-us")] = new StatusError(500, "x");
+  replies[contentUrl("gid-hsr", "ru-ru")] = { retcode: -1 };
+  replies[contentUrl("gid-zzz", "en-us")] = reply([linkEntry("https://wa.me/1"), linkEntry("")]);
+  const f = fakeNet(replies);
+  const memory = emptyMemory();
+  const old = { ru: [social("vk", "https://vk.com/old")], en: [social("x", "https://x.com/old")] };
+  memory.socials = { genshin: structuredClone(old), hsr: structuredClone(old), zzz: structuredClone(old) };
+  const result = await fetchSocials(f.net, memory);
+  assert.equal(result.ok, false);
+  const error = (result as { error: string }).error;
+  assert.match(error, /genshin\/en/);
+  assert.match(error, /hsr\/ru/);
+  assert.match(error, /zzz\/en/);
+  assert.deepEqual(memory.socials.genshin, { ru: [social("vk", "https://vk.com/genshinru"), social("telegram", "https://t.me/genshinru")], en: old.en });
+  assert.deepEqual(memory.socials.hsr, { ru: old.ru, en: [social("x", "https://x.com/hsren")] });
+  assert.deepEqual(memory.socials.zzz, { ru: [social("vk", "https://vk.com/zzzru"), social("telegram", "https://t.me/zzzru")], en: old.en }, "ни одной подходящей записи — не повод стирать прошлое");
+  assert.equal(f.calls.length, 7, "запросы шли дальше после сбоя ответа, без повторов в цикле");
+});
+
+test("сбор: сбой связи останавливает всё, остальные списки ждут следующего прогона", async () => {
+  const replies = allReplies();
+  replies[contentUrl("gid-genshin", "en-us")] = new TypeError("fetch failed");
+  const f = fakeNet(replies);
+  const memory = emptyMemory();
+  const result = await fetchSocials(f.net, memory);
+  assert.equal(result.ok, false);
+  assert.deepEqual(Object.keys(memory.socials), ["genshin"]);
+  assert.deepEqual(Object.keys(memory.socials.genshin!), ["ru"]);
+  assert.deepEqual(f.calls, [HOYOPLAY_URL, contentUrl("gid-genshin", "ru-ru"), contentUrl("gid-genshin", "en-us")]);
+
+  const slowShort = allReplies();
+  slowShort[contentUrl("gid-genshin", "ru-ru")] = content("https://hoyo.link/aaaa1111");
+  const g = fakeNet(slowShort, { "https://hoyo.link/aaaa1111": new DOMException("timeout", "TimeoutError") });
+  const other = emptyMemory();
+  assert.equal((await fetchSocials(g.net, other)).ok, false);
+  assert.deepEqual(other.socials, {});
+  assert.equal(g.calls.length, 3, "после зависшей короткой ссылки больше никуда не ходим");
+});
+
+test("сбор: сбой списка игр, не та форма и ни одной из трёх игр — ошибка, прошлое остаётся", async () => {
+  const memory = emptyMemory();
+  memory.socials = { zzz: { en: [social("x", "https://x.com/old")] } };
+  const before = structuredClone(memory.socials);
+  assert.equal((await fetchSocials(fakeNet({ [HOYOPLAY_URL]: new StatusError(500, HOYOPLAY_URL) }).net, memory)).ok, false);
+  assert.deepEqual(await fetchSocials(fakeNet({ [HOYOPLAY_URL]: { retcode: -1 } }).net, memory), { ok: false, error: "ответ HoYoPlay не той формы" });
+  assert.deepEqual(await fetchSocials(fakeNet({ [HOYOPLAY_URL]: basicInfo(["bh3_global", "x"]) }).net, memory), {
+    ok: false,
+    error: "в ответе HoYoPlay нет ни одной из трёх игр",
+  });
+  assert.deepEqual(memory.socials, before);
 });

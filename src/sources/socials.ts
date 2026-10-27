@@ -2,9 +2,11 @@
 // лаунчера HoYoPlay (список значков соцсетей в его окне), Wuthering Waves и Arknights: Endfield
 // заданы вручную по их официальным сайтам. Хранятся только ссылки и их тип.
 
-import type { Redirects } from "../http.ts";
+import { isTransportError, type Http, type Redirects } from "../http.ts";
 import type { GameId, GameSocials, HubData, Social, SocialKind } from "../types.ts";
 import { isPublicHttpsUrl } from "../validate.ts";
+import { BIZ, HOYOPLAY_URL } from "./launcherArt.ts";
+import type { SourceMemory } from "./registry.ts";
 
 export const SOCIAL_KINDS: readonly SocialKind[] = ["hoyolab", "site", "youtube", "x", "discord", "reddit", "facebook", "instagram", "tiktok", "telegram", "vk"];
 export const SOCIAL_LANGS = ["ru", "en"] as const;
@@ -194,11 +196,87 @@ export function withSocials(hub: HubData, memory: SocialsMemory): HubData {
     const found: GameSocials | undefined = memory[game.id] ?? (game.id === "wuthering" || game.id === "endfield" ? MANUAL_SOCIALS[game.id] : undefined);
     if (found === undefined) return game;
     const socials: GameSocials = {};
-    if (found.ru !== undefined && found.ru.length > 0) socials.ru = found.ru.map((s) => ({ ...s }));
-    if (found.en !== undefined && found.en.length > 0) socials.en = found.en.map((s) => ({ ...s }));
+    // Память читается из файла состояния: списком считается только настоящий массив.
+    if (Array.isArray(found.ru) && found.ru.length > 0) socials.ru = found.ru.map((s) => ({ ...s }));
+    if (Array.isArray(found.en) && found.en.length > 0) socials.en = found.en.map((s) => ({ ...s }));
     if (socials.ru === undefined && socials.en === undefined) return game;
     changed = true;
     return { ...game, socials };
   });
   return changed ? { ...hub, games } : hub;
+}
+
+export const SOCIALS = { id: "hoyoplay-socials", label: "соцсети игр из лаунчера HoYoPlay", everyHours: 6 } as const;
+
+const CONTENT_URL = "https://sg-hyp-api.hoyoverse.com/hyp/hyp-connect/api/getGameContent?launcher_id=VYTpXlbWo8";
+
+/** Язык файла и язык лаунчера, на котором он спрашивается. */
+const LANGUAGES = [
+  ["ru", "ru-ru"],
+  ["en", "en-us"],
+] as const;
+
+/** Игры HoYoPlay в порядке опроса. */
+const HOYO_GAMES = ["genshin", "hsr", "zzz"] as const;
+type HoyoGame = (typeof HOYO_GAMES)[number];
+
+/** Адрес содержимого лаунчера для игры и языка («ru-ru», «en-us»). */
+export const contentUrl = (gameId: string, language: string): string => `${CONTENT_URL}&game_id=${encodeURIComponent(gameId)}&language=${language}`;
+
+/** Номера трёх игр в лаунчере из getAllGameBasicInfo — те же, что у фонов. Ответ не той формы — null. */
+export function parseHoyoplayGameIds(json: unknown): Partial<Record<HoyoGame, string>> | null {
+  if (!isRecord(json) || json.retcode !== 0 || !isRecord(json.data) || !Array.isArray(json.data.game_info_list)) return null;
+  const ids: Partial<Record<HoyoGame, string>> = {};
+  for (const entry of json.data.game_info_list) {
+    const game = isRecord(entry) && isRecord(entry.game) ? entry.game : null;
+    if (game === null || typeof game.biz !== "string" || !Object.hasOwn(BIZ, game.biz)) continue;
+    const id = BIZ[game.biz] as HoyoGame;
+    if (typeof game.id === "string" && game.id !== "" && ids[id] === undefined) ids[id] = game.id;
+  }
+  return ids;
+}
+
+/**
+ * Обновляет memory.socials: по каждой из трёх игр и каждому языку — один запрос содержимого лаунчера и,
+ * для коротких ссылок, по одному запросу за переходом. Всё подряд, повторов в цикле нет. Список, у которого
+ * не вышло (ответ не той формы, ни одной подходящей записи, сбой запроса), остаётся прошлым, а остальные
+ * обновляются; на сбое связи сбор останавливается — остальные ждут следующего прогона. Итог с ошибкой, если хоть
+ * один список не обновился.
+ */
+export async function fetchSocials(http: Http & Redirects, memory: SourceMemory): Promise<{ ok: true } | { ok: false; error: string }> {
+  let ids: Partial<Record<HoyoGame, string>> | null;
+  try {
+    // Без условных заголовков: те же метки у фонов, а здесь нужно тело целиком.
+    ids = parseHoyoplayGameIds(JSON.parse((await http.get(HOYOPLAY_URL)).body));
+  } catch (error) {
+    return { ok: false, error: (error as Error).message };
+  }
+  if (ids === null) return { ok: false, error: "ответ HoYoPlay не той формы" };
+  if (Object.keys(ids).length === 0) return { ok: false, error: "в ответе HoYoPlay нет ни одной из трёх игр" };
+
+  const errors: string[] = [];
+  collect: for (const game of HOYO_GAMES) {
+    const gameId = ids[game];
+    if (gameId === undefined) continue;
+    for (const [lang, language] of LANGUAGES) {
+      const unit = `${game}/${lang}`;
+      try {
+        const urls = parseSocialLinks(JSON.parse((await http.get(contentUrl(gameId, language))).body));
+        if (urls === null) {
+          errors.push(`${unit}: ответ не той формы`);
+          continue;
+        }
+        const list = await classifySocials(http, urls);
+        if (list.length === 0) {
+          errors.push(`${unit}: ни одной подходящей записи`);
+          continue;
+        }
+        memory.socials[game] = { ...memory.socials[game], [lang]: list };
+      } catch (error) {
+        errors.push(`${unit}: ${(error as Error).message}`);
+        if (isTransportError(error)) break collect;
+      }
+    }
+  }
+  return errors.length === 0 ? { ok: true } : { ok: false, error: errors.join("; ") };
 }

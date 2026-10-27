@@ -11,6 +11,7 @@ import { APP_RELEASE, fetchAppRelease } from "./sources/appRelease.ts";
 import { refreshArt, withArt } from "./sources/art.ts";
 import { unreadableAnnouncement, withKuroBanners } from "./sources/kuro.ts";
 import { LAUNCHER_ART, fetchLauncherArt, withLauncherArt } from "./sources/launcherArt.ts";
+import { SOCIALS, fetchSocials, withSocials } from "./sources/socials.ts";
 import { KURO_SIGNAL, SOURCES, fetchKuroAnnouncements, kuroBannersFromMemory, type SourceContext } from "./sources/registry.ts";
 import {
   PAGES_URL,
@@ -32,7 +33,7 @@ const dryRun = process.argv.includes("--dry-run");
 const now = Math.floor(Date.now() / 1000);
 const http = createHttp();
 const state = loadState() ?? emptyState();
-const knownIds = new Set<string>([...SOURCES.map((s) => s.id), KURO_SIGNAL.id, APP_RELEASE.id, LAUNCHER_ART.id]);
+const knownIds = new Set<string>([...SOURCES.map((s) => s.id), KURO_SIGNAL.id, APP_RELEASE.id, LAUNCHER_ART.id, SOCIALS.id]);
 for (const id of pruneState(state, knownIds)) console.log(`Источника ${id} больше нет — запись о нём убрана.`);
 
 // Живой файл проверяется на каждом прогоне, не только когда состояния нет:
@@ -123,6 +124,14 @@ if (runner.shouldStart(LAUNCHER_ART.id, LAUNCHER_ART.everyHours)) {
   else recordRun(state.failures, LAUNCHER_ART.id, { kind: "broken", error: result.error }, now);
 }
 
+// Соцсети Genshin, Star Rail и ZZZ из того же лаунчера: список значков и куда ведут короткие ссылки.
+if (runner.shouldStart(SOCIALS.id, SOCIALS.everyHours)) {
+  const result = await fetchSocials(http, memory);
+  lastRun[SOCIALS.id] = now;
+  if (result.ok) delete state.failures[SOCIALS.id];
+  else recordRun(state.failures, SOCIALS.id, { kind: "broken", error: result.error }, now);
+}
+
 const hadPrevious = state.base !== null;
 const base = mergeHub({ previous: state.base, catalog, runs, now });
 
@@ -149,7 +158,9 @@ const withBannerArt = withArt(withOverrides, memory.bannerArt);
 // Версия приложения — из памяти, как баннеры Kuro; в state.base не попадает.
 const withRelease: HubData = memory.appRelease ? { ...withBannerArt, app: memory.appRelease } : withBannerArt;
 // Фоны лаунчера — из памяти, как версия приложения; в state.base не попадают (игры берутся из каталога).
-const hub: HubData = withLauncherArt(withRelease, memory.launcherArt);
+const withArtBackgrounds: HubData = withLauncherArt(withRelease, memory.launcherArt);
+// Соцсети — тоже из памяти (и ручные списки двух игр); в state.base не попадают.
+const hub: HubData = withSocials(withArtBackgrounds, memory.socials);
 const validationErrors = validateHub(hub);
 validationErrors.push(...missingPrevious(runs, hadPrevious));
 
@@ -182,6 +193,7 @@ const labels = Object.fromEntries([
   [KURO_SIGNAL.id, KURO_SIGNAL.label],
   [APP_RELEASE.id, APP_RELEASE.label],
   [LAUNCHER_ART.id, LAUNCHER_ART.label],
+  [SOCIALS.id, SOCIALS.label],
 ]);
 const repo = process.env.GITHUB_REPOSITORY ?? "Ertezy/Kitsudock-data";
 const repoUrl = `${process.env.GITHUB_SERVER_URL ?? "https://github.com"}/${repo}`;

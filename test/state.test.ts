@@ -267,6 +267,32 @@ test("фоны лаунчера не того вида — состояние с
   assert.deepEqual(loadState(path), valid);
 });
 
+test("состояние без памяти о соцсетях получает пустую, остальное не трогается", () => {
+  const dir = mkdtempSync(join(tmpdir(), "collector-"));
+  const path = join(dir, "state.json");
+  const lastRun = { [KURO_SIGNAL.id]: NOW - 60 };
+  const memory = {
+    revisions: {}, pages: {}, validators: {}, kuro: [], kuroFacts: {}, kuroReleases: {}, kuroPatchNotes: [],
+    bannerArt: {}, appRelease: null, launcherArt: {}, kuroDeferred: {},
+  };
+  writeFileSync(path, JSON.stringify({ version: 1, base: null, published: null, lastPublishedAt: null, lastRun, failures: {}, memory }));
+  const loaded = loadState(path);
+  assert.ok(loaded);
+  assert.deepEqual(loaded.memory.socials, {});
+  assert.deepEqual(loaded.lastRun, lastRun);
+});
+
+test("соцсети не того вида — состояние считается отсутствующим, правильные читаются как есть", () => {
+  const dir = mkdtempSync(join(tmpdir(), "collector-"));
+  const path = join(dir, "state.json");
+  const valid = emptyState();
+  writeFileSync(path, JSON.stringify({ ...valid, memory: { ...valid.memory, socials: [] } }));
+  assert.equal(loadState(path), null, "socials — список");
+  valid.memory.socials = { zzz: { ru: [{ kind: "vk", url: "https://hoyo.link/aaaa1111" }] } };
+  saveState(valid, path);
+  assert.deepEqual(loadState(path), valid);
+});
+
 test("факты Kuro в состоянии сохраняются и читаются как есть, метки меню остаются", () => {
   const dir = mkdtempSync(join(tmpdir(), "collector-"));
   const path = join(dir, "state.json");
