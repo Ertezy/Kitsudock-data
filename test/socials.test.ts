@@ -212,6 +212,9 @@ test("проверка списков: kind не из списка, хост н�
     { ru: [{ kind: "shop", url: "https://store.example.test/a" }] },
     { ru: [social("youtube", "https://x.com/a")] },
     { ru: [social("vk", "https://vk.com.evil.example/a")] },
+    // Хост в самой строке — строчными: приложение сверяет его буквально и такую запись отбросило бы.
+    { ru: [social("x", "https://X.com/a")] },
+    { ru: [social("vk", "https://HOYO.LINK/aaaa1111")] },
     { ru: [social("reddit", "https://reddit.com/r/a")] },
     { ru: [social("vk", "http://vk.com/a")] },
     { ru: [social("vk", "https://u:p@vk.com/a")] },

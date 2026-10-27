@@ -50,12 +50,17 @@ export function kindOfUrl(url: string): SocialKind | null {
   return host === null ? null : (KIND_BY_HOST.get(host) ?? null);
 }
 
-/** Запись годится: простой публичный https-адрес до предела длины, хост подходит к kind (или это hoyo.link). */
+/**
+ * Запись годится: простой публичный https-адрес до предела длины, хост подходит к kind (или это hoyo.link).
+ * Хост записан в строке так же, как его видит разбор, — строчными: приложение сверяет его в исходной
+ * строке буквально, и `https://X.com/…` у него не прошёл бы.
+ */
 function socialOk(kind: unknown, url: unknown): boolean {
   if (typeof kind !== "string" || !(SOCIAL_KINDS as readonly string[]).includes(kind)) return false;
   if (!isPublicHttpsUrl(url) || url.length > SOCIAL_URL_MAX) return false;
   const host = hostOf(url);
-  return host !== null && (host === SHORT_LINK_HOST || KIND_HOSTS[kind as SocialKind].includes(host));
+  if (host === null || !url.startsWith(`https://${host}`)) return false;
+  return host === SHORT_LINK_HOST || KIND_HOSTS[kind as SocialKind].includes(host);
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
