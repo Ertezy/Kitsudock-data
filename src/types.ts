@@ -52,12 +52,28 @@ export interface GameBackground {
   video?: string;
 }
 
+/** Тип записи в соцсетях игры; хост адреса обязан подходить к нему (sources/socials.ts). */
+export type SocialKind = "hoyolab" | "site" | "youtube" | "x" | "discord" | "reddit" | "facebook" | "instagram" | "tiktok" | "telegram" | "vk";
+
+/** Одна официальная страница игры. url хранится как есть, в том числе короткая ссылка hoyo.link. */
+export interface Social {
+  kind: SocialKind;
+  url: string;
+}
+
+/** Официальные страницы игры по языкам, в порядке показа. Языка без списка нет совсем. */
+export interface GameSocials {
+  ru?: Social[];
+  en?: Social[];
+}
+
 export interface HubGame {
   id: GameId;
   title: string;
   redeemUrl?: string;
   match: { steamAppIds: number[]; epicAppNames: string[]; folderNames: string[] };
   background?: GameBackground;
+  socials?: GameSocials;
 }
 
 /** Последняя опубликованная версия приложения: номер без «v» и страница релиза. */

@@ -4,6 +4,7 @@
 import { VERSION } from "./sources/appRelease.ts";
 import { CODE_PATTERN } from "./sources/codes.ts";
 import { isImageUrl, isVideoUrl } from "./sources/launcherArt.ts";
+import { socialsProblem } from "./sources/socials.ts";
 import { VIDEOS_PER_GAME } from "./sources/videos.ts";
 import { GAME_IDS, VIDEO_LANGS, type HubData } from "./types.ts";
 
@@ -171,6 +172,11 @@ export function validateHub(hub: HubData, maxBytes = MAX_FILE_BYTES): string[] {
       if (!(g.background.video === undefined || isVideoUrl(g.background.video))) {
         fail(`games[${i}].background.video: обычный https-адрес видео webm или mp4`);
       }
+    }
+    // Те же правила, по которым приложение читает соцсети: что не прошло там, остановит выкладку здесь.
+    if (g.socials !== undefined) {
+      const problem = socialsProblem(g.socials);
+      if (problem !== null) fail(`games[${i}].socials${problem}`);
     }
   });
   const knownGame = (id: string) => gameIds.has(id);

@@ -111,6 +111,39 @@ test("фон игры: необязателен, картинка и видео 
   assert.ok(errors.some((e) => e.startsWith("games[0].background.video")));
 });
 
+test("соцсети игры: необязательны, проходят хорошие списки; нарушения контракта ловятся с путём к полю", () => {
+  const hub = good();
+  hub.games[0]!.socials = {
+    ru: [
+      { kind: "vk", url: "https://hoyo.link/eev1BdAd" },
+      { kind: "hoyolab", url: "https://www.hoyolab.com/home?lang=ru-ru&utm_source=launcher" },
+      { kind: "site", url: "https://hsr.hoyoverse.com/" },
+    ],
+    en: [{ kind: "x", url: "https://twitter.com/example" }],
+  };
+  assert.deepEqual(validateHub(hub), []);
+  const bad: unknown[] = [
+    {},
+    { ru: [] },
+    { de: [{ kind: "vk", url: "https://vk.com/a" }] },
+    { ru: [{ kind: "whatsapp", url: "https://wa.me/1" }] },
+    { ru: [{ kind: "youtube", url: "https://x.com/a" }] },
+    { ru: [{ kind: "vk", url: "http://vk.com/a" }] },
+    { ru: [{ kind: "vk", url: "https://vk.com/a" }, { kind: "vk", url: "https://vk.com/a" }] },
+    { ru: Array.from({ length: 11 }, (_, i) => ({ kind: "vk", url: `https://vk.com/g${i}` })) },
+    { ru: [{ kind: "vk", url: `https://vk.com/${"a".repeat(600)}` }] },
+    null,
+    [],
+  ];
+  for (const socials of bad) {
+    hub.games[0]!.socials = socials as never;
+    assert.ok(
+      validateHub(hub).some((e) => e.startsWith("games[0].socials")),
+      JSON.stringify(socials).slice(0, 80),
+    );
+  }
+});
+
 test("общие проверки записей: название баннера, имя персонажа, код", () => {
   assert.equal(bannerTitleOk("x"), true);
   assert.equal(bannerTitleOk("x".repeat(200)), true);
@@ -302,6 +335,11 @@ const URL_FIELDS: { path: string; set: (hub: HubData, url: string) => void; bad:
     bad: ["https://u:p@cdn.example.test/a.webm", "https://cdn.example.test:8443/a.webm", "https://192.168.1.1/a.mp4", "https://[::1]/a.mp4", "https://cdn/a.webm", "https://cdn.example.test/%2e%2e/a.webm"],
   },
   {
+    path: "games[0].socials",
+    set: (h, u) => void (h.games[0]!.socials = { en: [{ kind: "vk", url: u }] }),
+    bad: ["https://u:p@vk.com/a", "https://vk.com:8443/a", "https://192.168.1.1/a", "https://[::1]/a", "https://vk/a", "https://vk.com/a/../b", "https://vk.com/a b"],
+  },
+  {
     path: "codes[0].source",
     set: (h, u) => void (h.codes[0]!.source = u),
     bad: ["https://u:p@wiki.example.test/x", "https://wiki.example.test:8443/x", "https://192.168.1.1/x", "https://[::1]/x", "http://wiki.example.test/x", "https://wiki/x", "https://localhost./x", "https://wiki.example.test/a/./x"],
@@ -458,6 +496,7 @@ const SURROGATE_FIELDS: [string, (hub: HubData) => void][] = [
   ["games[0].redeemUrl", (h) => void (h.games[0]!.redeemUrl = `https://hsr.hoyoverse.com/gift?code={code}${LONE_HIGH}`)],
   ["games[0].background.image", (h) => void (h.games[0]!.background = { image: `https://cdn.example.test/${LONE_LOW}/a.webp` })],
   ["games[0].background.video", (h) => void (h.games[0]!.background = { image: "https://cdn.example.test/a.webp", video: `https://cdn.example.test/${LONE_LOW}/a.webm` })],
+  ["games[0].socials", (h) => void (h.games[0]!.socials = { ru: [{ kind: "vk", url: `https://vk.com/${LONE_HIGH}` }] })],
   ["codes[0].rewards", (h) => void (h.codes[0]!.rewards = `Jade${LONE_HIGH}`)],
   ["codes[0].region", (h) => void (h.codes[0]!.region = LONE_HIGH)],
   ["codes[0].source", (h) => void (h.codes[0]!.source = `https://wiki.example.test/${LONE_HIGH}`)],
