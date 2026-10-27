@@ -4,9 +4,9 @@ import { gzipSync } from "node:zlib";
 import { createHttp, isTransportError, StatusError, USER_AGENT, type FetchLike } from "../src/http.ts";
 
 function fakeFetch(responses: { status: number; body?: string; headers?: Record<string, string> }[]) {
-  const calls: { url: string; headers: Record<string, string> }[] = [];
+  const calls: { url: string; headers: Record<string, string>; redirect?: string }[] = [];
   const fetch: FetchLike = async (url, init) => {
-    calls.push({ url, headers: init.headers });
+    calls.push({ url, headers: init.headers, redirect: init.redirect });
     const next = responses.shift();
     if (!next) throw new Error("сеть недоступна");
     return {
@@ -298,4 +298,57 @@ test("сбой связи: таймаут, обрыв и «fetch failed» — д
   };
   const timedOut = await createHttp({ fetch: slow, sleep: noSleep }).get("https://example.org/a").catch((e: unknown) => e);
   assert.equal(isTransportError(timedOut), true);
+});
+
+// Куда ведёт перенаправление: один запрос без перехода по нему.
+
+test("location: один запрос с redirect manual, подписью и адресом из заголовка Location", async () => {
+  const f = fakeFetch([{ status: 302, headers: { location: "https://vk.com/example" } }]);
+  const target = await createHttp({ fetch: f.fetch, sleep: noSleep }).location("https://short.example.test/abc");
+  assert.equal(target, "https://vk.com/example");
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0]!.redirect, "manual");
+  assert.equal(f.calls[0]!.headers["User-Agent"], USER_AGENT);
+});
+
+test("location: любое перенаправление 301, 302, 303, 307, 308 читается; не перенаправление или нет заголовка — null", async () => {
+  for (const status of [301, 302, 303, 307, 308]) {
+    const f = fakeFetch([{ status, headers: { location: "/next" } }]);
+    assert.equal(await createHttp({ fetch: f.fetch, sleep: noSleep }).location("https://short.example.test/a"), "/next", String(status));
+  }
+  for (const status of [200, 304, 404]) {
+    const f = fakeFetch([{ status, headers: { location: "https://vk.com/x" } }]);
+    assert.equal(await createHttp({ fetch: f.fetch, sleep: noSleep }).location("https://short.example.test/a"), null, String(status));
+  }
+  assert.equal(await createHttp({ fetch: fakeFetch([{ status: 302 }]).fetch, sleep: noSleep }).location("https://short.example.test/a"), null);
+  assert.equal(await createHttp({ fetch: fakeFetch([{ status: 302, headers: { location: "  " } }]).fetch, sleep: noSleep }).location("https://short.example.test/a"), null);
+});
+
+test("location: без повтора — сбой уходит наверх после одной попытки; адрес не https отклоняется до запроса", async () => {
+  const f = fakeFetch([{ status: 503 }, { status: 302, headers: { location: "https://vk.com/x" } }]);
+  const http = createHttp({ fetch: f.fetch, sleep: noSleep });
+  assert.equal(await http.location("https://short.example.test/a"), null, "503 — не перенаправление");
+  assert.equal(f.calls.length, 1, "повтора нет");
+  const broken: FetchLike = async () => {
+    throw new TypeError("fetch failed");
+  };
+  await assert.rejects(createHttp({ fetch: broken, sleep: noSleep }).location("https://short.example.test/a"), /fetch failed/);
+  await assert.rejects(createHttp({ fetch: fakeFetch([]).fetch, sleep: noSleep }).location("http://short.example.test/a"), /https/);
+});
+
+test("location: встаёт в ту же очередь по хосту и ждёт паузу между запросами", async () => {
+  let active = 0;
+  let peak = 0;
+  const fetch: FetchLike = async () => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise((r) => setTimeout(r, 5));
+    active--;
+    return { status: 302, text: async () => "", headers: { get: (name: string) => (name === "location" ? "https://vk.com/x" : null) } };
+  };
+  const pauses: number[] = [];
+  const http = createHttp({ fetch, sleep: async (ms) => void pauses.push(ms), hostGapMs: { "short.example.test": 400 } });
+  await Promise.all([http.location("https://short.example.test/a"), http.location("https://short.example.test/b"), http.get("https://short.example.test/c").catch(() => null)]);
+  assert.equal(peak, 1);
+  assert.ok(pauses.some((ms) => ms > 0 && ms <= 400), "пауза между запросами к хосту");
 });
