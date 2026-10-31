@@ -6,7 +6,7 @@ import { mergeHub, sectionKey } from "../src/merge.ts";
 import { GAME_IDS, type HubData, type HubGame, type Item, type SourceRun } from "../src/types.ts";
 import { bannerStarts, parseOverrides } from "../src/overrides.ts";
 import { KURO_MENU_URL, kuroArticleJsonUrl, kuroArticleUrl, kuroBanners, unreadableAnnouncement, withKuroBanners, type KuroBannerFact } from "../src/sources/kuro.ts";
-import { KURO_SIGNAL, SOURCES, emptyMemory, fetchKuroAnnouncements, kuroBannersFromMemory, kuroFactsFromMemory } from "../src/sources/registry.ts";
+import { CODE_RULES, KURO_SIGNAL, SOURCES, emptyMemory, fetchKuroAnnouncements, kuroBannersFromMemory, kuroFactsFromMemory } from "../src/sources/registry.ts";
 import { KURO_ARTICLES_BUDGET_MS, MAX_BANNERS_PER_GAME, MAX_KURO_ARTICLES_PER_RUN, MAX_KURO_BANNERS_PER_ARTICLE, RUN_BUDGET_MS } from "../src/validate.ts";
 
 type Route = (url: URL) => HttpResponse | undefined;
@@ -66,6 +66,30 @@ test("коды с фандома: тот же номер правки — без
   const second = await source.run({ http: f.http, now: NOW, memory });
   assert.equal(second.kind, "unchanged");
   assert.equal(f.urls.filter((u) => u.includes("action=parse")).length, parses);
+});
+
+test("коды с фандома: правка запомнена прежним разбором — страница читается заново", async () => {
+  // Разбор поменялся (например, как считается срок одной датой), а страница — нет:
+  // коды из памяти прошлых прогонов посчитаны по-старому, и их надо разобрать снова.
+  const page = "{{Redemption Code Row|NSJR3B97ZZ5X|ref=|A|{{Item List|Stellar Jade*50|mode=br}}|2026-08-16|unknown}}";
+  const f = fakeHttp([
+    (u) => (u.searchParams.get("prop") === "info" ? json({ query: { pages: [{ title: "Redemption Code", lastrevid: 5 }] } }) : undefined),
+    (u) => (u.searchParams.get("action") === "parse" ? json({ parse: { wikitext: page } }) : undefined),
+  ]);
+  const memory = emptyMemory();
+  const source = byId("hsr-codes");
+  await source.run({ http: f.http, now: NOW, memory });
+  const [key] = Object.keys(memory.revisions);
+  assert.ok(key!.endsWith(`|rules${CODE_RULES}`), key);
+  // Та же правка, запомненная прежними правилами разбора: ключ без номера правил.
+  const legacy = key!.slice(0, key!.lastIndexOf("|"));
+  memory.revisions = { [legacy]: 5 };
+  const parses = f.urls.filter((u) => u.includes("action=parse")).length;
+  const again = await source.run({ http: f.http, now: NOW, memory });
+  assert.equal(again.kind, "ok");
+  assert.equal(f.urls.filter((u) => u.includes("action=parse")).length, parses + 1);
+  // Прежняя запись убрана, чтобы память не копила ключи старых правил.
+  assert.deepEqual(memory.revisions, { [key!]: 5 });
 });
 
 test("баннеры с фандома: разобранные страницы берутся из памяти, миниатюры пачкой", async () => {

@@ -132,6 +132,14 @@ const outOfTime = (): SourceRun<Item> => ({ kind: "skipped", reason: OUT_OF_TIME
  */
 const liveCodes = (codes: Code[], now: number): Code[] => codes.filter((c) => isLive("codes", c, now));
 
+/**
+ * Номер правил разбора страниц с кодами. Запомненный номер правки страницы годится,
+ * только пока правила те же: коды из памяти прошлых прогонов посчитаны по ним. Поменялось,
+ * как читается страница (так было со сроком одной датой), — номер растёт, и каждая страница
+ * один раз читается заново, даже если на вики её никто не правил.
+ */
+export const CODE_RULES = 2;
+
 function fandomCodes(id: string, game: GameId, subdomain: string, page: string, template: "Code Row" | "Redemption Code Row" | "wuwa"): SourceDef {
   return {
     id,
@@ -145,13 +153,20 @@ function fandomCodes(id: string, game: GameId, subdomain: string, page: string, 
         const wiki = fandom(subdomain);
         const rev = (await lastRevisions(http, wiki, [page])).get(page);
         if (rev === undefined) return { kind: "broken", error: `страница ${page} не найдена` };
-        const key = `${wiki.api}|${page}`;
+        const base = `${wiki.api}|${page}`;
+        const key = `${base}|rules${CODE_RULES}`;
         if (memory.revisions[key] === rev) return { kind: "unchanged" };
         const text = await pageWikitext(http, wiki, page);
         const url = wiki.pageUrl(page);
         const r = template === "wuwa" ? parseWuwaCodes(text, url) : parseRowCodes(text, template, game, url);
         const verdict = judge("codes", r.found, liveCodes(r.codes, now), r.parsed, r.dropped);
-        if (verdict.kind === "ok") memory.revisions[key] = rev;
+        if (verdict.kind === "ok") {
+          // Записи этой страницы по прежним правилам больше не нужны — память их не копит.
+          for (const old of Object.keys(memory.revisions)) {
+            if (old === base || old.startsWith(`${base}|`)) delete memory.revisions[old];
+          }
+          memory.revisions[key] = rev;
+        }
         return verdict;
       }),
   };
