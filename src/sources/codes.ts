@@ -31,6 +31,9 @@ const NO_EXPIRY = new Set(["unknown", "indef", "indefinite", "tba"]);
  */
 const HOYO_DAY_END_OFFSET_MINUTES = 8 * 60;
 
+/** Срок в ячейке — одна дата, без часа. */
+const isDateOnly = (value: string): boolean => !/\d:\d/.test(value);
+
 /** Срок из ячейки страницы HoYoverse: null — без срока, undefined — не разобрать. */
 function hoyoExpiry(value: string): number | null | undefined {
   const text = value.trim();
@@ -39,8 +42,7 @@ function hoyoExpiry(value: string): number | null | undefined {
   if (!parts) return undefined;
   // Время в ячейке вики пишут по UTC (так требует подсказка редакторам на странице);
   // одна дата — конец дня по UTC+8.
-  const dateOnly = !/\d:\d/.test(text);
-  return atOffset(parts, dateOnly ? HOYO_DAY_END_OFFSET_MINUTES : 0);
+  return atOffset(parts, isDateOnly(text) ? HOYO_DAY_END_OFFSET_MINUTES : 0);
 }
 
 export function parseRowCodes(
@@ -79,8 +81,10 @@ export function parseRowCodes(
       dropped++;
       continue;
     }
+    // Срок одной датой — оценка: лаунчер покажет день, а не часы и минуты.
+    const dayOnly = expiresAt !== null && isDateOnly(expiry) ? { expiresDayOnly: true as const } : {};
     for (const code of group) {
-      codes.push({ gameId, code, rewards: rewardsValue, expiresAt, region: "all", source });
+      codes.push({ gameId, code, rewards: rewardsValue, expiresAt, ...dayOnly, region: "all", source });
     }
   }
   return { found, codes, parsed, dropped };

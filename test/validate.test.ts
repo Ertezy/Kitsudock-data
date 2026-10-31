@@ -29,6 +29,19 @@ test("ошибки называют путь к полю", () => {
   assert.ok(errors.some((e) => e.startsWith("videos[0].url")));
 });
 
+test("пометка «срок только датой» — true и только при сроке", () => {
+  const ok = good();
+  ok.codes[0]!.expiresAt = 1_800_000_000;
+  ok.codes[0]!.expiresDayOnly = true;
+  assert.deepEqual(validateHub(ok), []);
+  for (const [expiresAt, flag] of [[null, true], [1_800_000_000, false], [1_800_000_000, "yes"]] as const) {
+    const hub = good();
+    hub.codes[0]!.expiresAt = expiresAt;
+    (hub.codes[0] as unknown as Record<string, unknown>).expiresDayOnly = flag;
+    assert.ok(validateHub(hub).some((e) => e.startsWith("codes[0].expiresDayOnly")), `${expiresAt} ${flag}`);
+  }
+});
+
 test("запись чужой игры и повтор игры в каталоге", () => {
   const hub = good();
   hub.codes[0]!.gameId = "genshin";

@@ -58,6 +58,14 @@ test("код: новый добавляется, совпавший берёт �
   if (hidden.ok) assert.deepEqual(applyOverrides(hub, hidden.overrides, NOW).codes, []);
 });
 
+test("код: срок из правки точный — пометка «только дата» от источника снимается", () => {
+  const dayOnly: HubData = { ...hub, codes: [{ ...wikiCode, expiresAt: NOW + 3600, expiresDayOnly: true }] };
+  const parsed = parseOverrides({ codes: [{ game: "hsr", code: "WIKICODE1", expires: "2026-09-30 12:00 UTC+0" }] });
+  assert.ok(parsed.ok);
+  if (!parsed.ok) return;
+  assert.deepEqual(applyOverrides(dayOnly, parsed.overrides, NOW).codes, [{ ...wikiCode, expiresAt: utc(2026, 9, 30, 12, 0) }]);
+});
+
 test("баннер: новый добавляется, известный источнику не дублируется, скрытый исчезает", () => {
   const parsed = parseOverrides({
     banners: [

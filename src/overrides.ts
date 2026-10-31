@@ -139,6 +139,8 @@ export function applyOverrides(hub: HubData, overrides: Overrides, now: number):
     if (existing) {
       if (o.rewards !== undefined) existing.rewards = o.rewards;
       existing.expiresAt = expiresAt;
+      // Срок правки записан с часом и поясом — он точный, оценка источника больше не действует.
+      delete existing.expiresDayOnly;
     } else {
       codes.push({ gameId: o.game, code: o.code, rewards: o.rewards ?? "", expiresAt, region: "all", source: null });
     }

@@ -58,6 +58,8 @@ test("Genshin: активные коды, группа кодов, китайс�
     source: GI_PAGE,
   });
   assert.equal(r.codes[2]!.expiresAt, utc(2026, 9, 20, 3, 59, 59));
+  // Срок с часом — точный: пометки «только дата» нет.
+  assert.equal(r.codes[2]!.expiresDayOnly, undefined);
   assert.equal(r.parsed, 3);
   assert.equal(r.dropped, 0);
 });
@@ -67,6 +69,10 @@ test("Star Rail: срок датой — до конца дня по UTC+8; пл
   assert.deepEqual(r.codes.map((c) => c.code), ["NSJR3B97ZZ5X", "YAJQ2TR6ZY2P"]);
   // 23:59:59 по UTC+8 — 15:59:59 по UTC того же дня.
   assert.equal(r.codes[1]!.expiresAt, utc(2026, 8, 15, 15, 59, 59));
+  // Часа на странице не было: лаунчер покажет день, а не часы и минуты.
+  assert.equal(r.codes[1]!.expiresDayOnly, true);
+  // Бессрочный код пометки не несёт.
+  assert.equal(r.codes[0]!.expiresDayOnly, undefined);
   assert.equal(r.codes[1]!.rewards, "Stellar Jade ×100, Refined Aether ×4");
   assert.equal(r.parsed, 4);
   assert.equal(r.dropped, 2);

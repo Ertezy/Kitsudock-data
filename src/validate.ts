@@ -187,6 +187,9 @@ export function validateHub(hub: HubData, maxBytes = MAX_FILE_BYTES): string[] {
     if (!(typeof c.code === "string" && codeOk(c.code))) fail(`${at}.code: латинские буквы и цифры, 4–40 знаков`);
     if (!text(c.rewards, 0, REWARDS_MAX)) fail(`${at}.rewards: до 300 знаков`);
     if (c.expiresAt !== null && !isInt(c.expiresAt)) fail(`${at}.expiresAt: целое или null`);
+    if (c.expiresDayOnly !== undefined && (c.expiresDayOnly !== true || c.expiresAt === null)) {
+      fail(`${at}.expiresDayOnly: только true и только при сроке`);
+    }
     if (!text(c.region, 1, 16)) fail(`${at}.region: 1–16 знаков`);
     if (!urlOrNull(c.source)) fail(`${at}.source: обычный https-адрес или null`);
   });
