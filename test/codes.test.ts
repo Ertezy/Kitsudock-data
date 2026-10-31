@@ -62,10 +62,11 @@ test("Genshin: активные коды, группа кодов, китайс�
   assert.equal(r.dropped, 0);
 });
 
-test("Star Rail: срок датой — до конца дня UTC; плохой код и непонятный срок выброшены", () => {
+test("Star Rail: срок датой — до конца дня по UTC+8; плохой код и непонятный срок выброшены", () => {
   const r = parseRowCodes(HSR, "Redemption Code Row", "hsr", "https://honkai-star-rail.fandom.com/wiki/Redemption_Code");
   assert.deepEqual(r.codes.map((c) => c.code), ["NSJR3B97ZZ5X", "YAJQ2TR6ZY2P"]);
-  assert.equal(r.codes[1]!.expiresAt, utc(2026, 8, 15, 23, 59, 59));
+  // 23:59:59 по UTC+8 — 15:59:59 по UTC того же дня.
+  assert.equal(r.codes[1]!.expiresAt, utc(2026, 8, 15, 15, 59, 59));
   assert.equal(r.codes[1]!.rewards, "Stellar Jade ×100, Refined Aether ×4");
   assert.equal(r.parsed, 4);
   assert.equal(r.dropped, 2);

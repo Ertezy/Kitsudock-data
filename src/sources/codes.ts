@@ -23,12 +23,24 @@ export const CODE_PATTERN = /^[A-Za-z0-9]{4,40}$/;
 // превращена в код без срока — см. hoyoExpiry и вызывающий код ниже.
 const NO_EXPIRY = new Set(["unknown", "indef", "indefinite", "tba"]);
 
+/**
+ * Пояс азиатского сервера HoYoverse, UTC+8. Срок, записанный в вики одной датой без
+ * часа, значит «до конца этого дня» — а сутки у HoYoverse кончаются по серверному
+ * времени, и азиатский сервер кончает их раньше всех. Конец дня по UTC оставлял бы
+ * код в лаунчере ещё на 8 часов после того, как его перестала принимать игра.
+ */
+const HOYO_DAY_END_OFFSET_MINUTES = 8 * 60;
+
 /** Срок из ячейки страницы HoYoverse: null — без срока, undefined — не разобрать. */
 function hoyoExpiry(value: string): number | null | undefined {
   const text = value.trim();
   if (NO_EXPIRY.has(text.toLowerCase())) return null;
   const parts = parseIsoLike(text);
-  return parts ? atOffset(parts, 0) : undefined;
+  if (!parts) return undefined;
+  // Время в ячейке вики пишут по UTC (так требует подсказка редакторам на странице);
+  // одна дата — конец дня по UTC+8.
+  const dateOnly = !/\d:\d/.test(text);
+  return atOffset(parts, dateOnly ? HOYO_DAY_END_OFFSET_MINUTES : 0);
 }
 
 export function parseRowCodes(
