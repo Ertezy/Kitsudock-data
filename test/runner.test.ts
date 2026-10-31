@@ -60,6 +60,20 @@ test("прогон далеко от срока идёт как раньше: к
   assert.deepEqual(e.lines.sort(), ["src-0: ok", "src-1: сломан — ответ 500", "src-2: skipped"]);
 });
 
+test("ручной запуск собирает всё сразу: час не настал — источник всё равно идёт", async () => {
+  const lastRun = { "src-0": NOW - 60, "signal": NOW - 60 };
+  const ctx: SourceContext = { http: {} as Http, now: NOW, memory: emptyMemory(), clock: () => 0, deadline: RUN_BUDGET_MS };
+  const runner = createRunner({ ctx, lastRun, failures: {}, now: NOW, everything: true, log: () => {} });
+  const calls: string[] = [];
+  const runs = await runner.runSources([fake(0, () => (calls.push("src-0"), ok()))]);
+  assert.deepEqual(calls, ["src-0"]);
+  assert.equal([...runs.values()][0]!.kind, "ok");
+  assert.equal(runner.shouldStart("signal", 6), true);
+  // Без ручного запуска — как раньше: час не настал, источник ждёт.
+  const usual = createRunner({ ctx, lastRun: { "signal": NOW - 60 }, failures: {}, now: NOW, log: () => {} });
+  assert.equal(usual.shouldStart("signal", 6), false);
+});
+
 test("не связанные источники стартуют вместе, как раньше: один не ждёт другого", async () => {
   const e = env();
   const started: string[] = [];

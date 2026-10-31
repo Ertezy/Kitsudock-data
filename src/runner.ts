@@ -22,6 +22,12 @@ export interface RunnerInput {
   /** Счётчики неудач; пополняются по ходу. */
   failures: Record<string, Failure>;
   now: number;
+  /**
+   * Собрать всё, не глядя на интервалы источников: ручной запуск из Actions. Владелец
+   * жмёт его, когда нужны свежие данные сейчас, — прогон, который из-за интервалов
+   * ничего не перечитал, выглядел бы удачным и ничего не менял.
+   */
+  everything?: boolean;
   /** Строки журнала прогона. */
   log?: (line: string) => void;
 }
@@ -48,7 +54,8 @@ function lanesOf(sources: SourceDef[], failures: Record<string, Failure>): Sourc
   ]);
 }
 
-export function createRunner({ ctx, lastRun, failures, now, log = console.log }: RunnerInput) {
+export function createRunner({ ctx, lastRun, failures, now, everything = false, log = console.log }: RunnerInput) {
+  const due = (id: string, everyHours: number) => everything || isDue(lastRun[id], everyHours, now);
   const skipped = (reason: string): SourceRun<Item> => ({ kind: "skipped", reason });
 
   /** Сколько источников пропущено из-за срока прогона: не начато в срок или остановлено им посреди работы. */
@@ -61,7 +68,7 @@ export function createRunner({ ctx, lastRun, failures, now, log = console.log }:
     let hostSilent = false;
     for (const source of lane) {
       const key = sectionKey(source.game, source.section, source.lang);
-      if (!isDue(lastRun[source.id], source.everyHours, now)) {
+      if (!due(source.id, source.everyHours)) {
         runs.set(key, { kind: "skipped" });
         log(`${source.id}: skipped`);
         continue;
@@ -125,7 +132,7 @@ export function createRunner({ ctx, lastRun, failures, now, log = console.log }:
      * и не вышло ли время прогона. Нет времени — строка в журнале, отметка запуска не ставится.
      */
     shouldStart(id: string, everyHours: number): boolean {
-      if (!isDue(lastRun[id], everyHours, now)) return false;
+      if (!due(id, everyHours)) return false;
       if (!timeIsUp(ctx)) return true;
       log(`${id}: ${runStatus(skipped(OUT_OF_TIME))}`);
       overrun++;

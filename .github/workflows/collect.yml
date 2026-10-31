@@ -38,6 +38,9 @@ jobs:
         id: collect
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Ручной запуск (Run workflow) собирает всё сразу, не глядя на интервалы
+          # источников: его жмут, когда свежие данные нужны сейчас.
+          COLLECT_EVERYTHING: ${{ github.event_name == 'workflow_dispatch' }}
         run: node src/main.ts
       - name: Сохранить состояние
         if: always() && hashFiles('.collector-state/state.json') != ''

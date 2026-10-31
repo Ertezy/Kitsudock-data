@@ -92,7 +92,8 @@ const lastRun: Record<string, number> = { ...state.lastRun };
 // После срока источники не начинают новых запросов и оставляют прошлые данные; сохранение, выкладка и задачи идут как обычно.
 const ctx: SourceContext = { http, now, memory, deadline: RUN_BUDGET_MS };
 const report: string[] = [];
-const runner = createRunner({ ctx, lastRun, failures: state.failures, now });
+// Ручной запуск из Actions (`collect.yml` выставляет переменную) собирает всё сразу.
+const runner = createRunner({ ctx, lastRun, failures: state.failures, now, everything: process.env.COLLECT_EVERYTHING === "true" });
 
 const runs = await runner.runSources(SOURCES);
 
