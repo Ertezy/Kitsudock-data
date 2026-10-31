@@ -27,6 +27,7 @@ import {
   type KuroBannerFact,
   type PatchNotes,
 } from "./kuro.ts";
+import type { SocialsMemory } from "./socials.ts";
 import { CHANNELS, feedUrl, parseYoutubeFeed } from "./videos.ts";
 
 export interface SourceMemory {
@@ -56,6 +57,8 @@ export interface SourceMemory {
   appRelease: AppRelease | null;
   /** Фоны официального лаунчера HoYoPlay по играм (sources/launcherArt.ts). */
   launcherArt: Partial<Record<GameId, GameBackground>>;
+  /** Соцсети игр HoYoPlay по играм и языкам (sources/socials.ts); у остальных игр списки заданы в коде. */
+  socials: SocialsMemory;
 }
 
 export const emptyMemory = (): SourceMemory => ({
@@ -70,6 +73,7 @@ export const emptyMemory = (): SourceMemory => ({
   bannerArt: {},
   appRelease: null,
   launcherArt: {},
+  socials: {},
 });
 
 export interface SourceContext {

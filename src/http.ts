@@ -28,7 +28,10 @@ export interface FetchResponse {
   body?: ReadableStream<Uint8Array> | null;
 }
 
-export type FetchLike = (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => Promise<FetchResponse>;
+export type FetchLike = (
+  url: string,
+  init: { headers: Record<string, string>; signal: AbortSignal; redirect?: "manual" },
+) => Promise<FetchResponse>;
 
 export interface HttpOptions {
   fetch?: FetchLike;
@@ -45,12 +48,26 @@ export interface Http {
   get(url: string, validators?: Validators, headers?: Record<string, string>): Promise<HttpResponse>;
 }
 
-/** Пауза для ennead.cc: их объявленный лимит — 2 запроса в секунду. */
-export const DEFAULT_HOST_GAPS: Record<string, number> = { "api.ennead.cc": 500 };
+/** Куда ведёт перенаправление: отдельный вид запроса, он не идёт по ссылке дальше первого шага. */
+export interface Redirects {
+  /**
+   * Адрес из заголовка Location одним запросом без перехода по нему (в нём может быть и относительный путь).
+   * Не перенаправление или нет заголовка — null. Повтора нет: сбой уходит наверх как есть.
+   */
+  location(url: string): Promise<string | null>;
+}
+
+/**
+ * Пауза для ennead.cc: их объявленный лимит — 2 запроса в секунду. Чужим серверам HoYoverse,
+ * у которых читаются соцсети игр, тоже даётся пауза: ссылки идут подряд.
+ */
+export const DEFAULT_HOST_GAPS: Record<string, number> = { "api.ennead.cc": 500, "sg-hyp-api.hoyoverse.com": 500, "hoyo.link": 500 };
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 const RETRYABLE = new Set([403, 429, 500, 502, 503, 504]);
 
-export function createHttp(options: HttpOptions = {}): Http {
+export function createHttp(options: HttpOptions = {}): Http & Redirects {
   const doFetch = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const timeoutMs = options.timeoutMs ?? 20_000;
@@ -134,22 +151,37 @@ export function createHttp(options: HttpOptions = {}): Http {
     }
   }
 
+  /** Ставит запрос в очередь своего хоста: по одному за раз и с паузой между ними, если она задана. */
+  function queued<T>(url: string, run: () => Promise<T>): Promise<T> {
+    if (!url.startsWith("https://")) return Promise.reject(new NotHttpsError(url));
+    const host = new URL(url).host;
+    const previous = queues.get(host) ?? Promise.resolve();
+    const task = previous
+      .catch(() => undefined)
+      .then(async () => {
+        const gap = hostGapMs[host] ?? 0;
+        const since = Date.now() - (lastStart.get(host) ?? 0);
+        if (gap > 0 && since < gap) await sleep(gap - since);
+        lastStart.set(host, Date.now());
+        return run();
+      });
+    queues.set(host, task);
+    return task;
+  }
+
   return {
     get(url, validators = {}, headers = {}) {
-      if (!url.startsWith("https://")) return Promise.reject(new NotHttpsError(url));
-      const host = new URL(url).host;
-      const previous = queues.get(host) ?? Promise.resolve();
-      const task = previous
-        .catch(() => undefined)
-        .then(async () => {
-          const gap = hostGapMs[host] ?? 0;
-          const since = Date.now() - (lastStart.get(host) ?? 0);
-          if (gap > 0 && since < gap) await sleep(gap - since);
-          lastStart.set(host, Date.now());
-          return withRetry(url, validators, headers);
-        });
-      queues.set(host, task);
-      return task;
+      return queued(url, () => withRetry(url, validators, headers));
+    },
+    location(url) {
+      return queued(url, async () => {
+        // redirect: "manual" — fetch отдаёт сам ответ с перенаправлением, а не идёт по нему.
+        const res = await doFetch(url, { headers: { "User-Agent": USER_AGENT }, signal: AbortSignal.timeout(timeoutMs), redirect: "manual" });
+        discard(res);
+        if (!REDIRECT_STATUSES.has(res.status)) return null;
+        const target = res.headers.get("location")?.trim();
+        return target ? target : null;
+      });
     },
   };
 }
