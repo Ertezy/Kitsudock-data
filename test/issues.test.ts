@@ -46,6 +46,18 @@ test("две неудачи подряд — задача с понятным з
   assert.match(a.body, /actions\/runs\/1/);
 });
 
+test("видео YouTube: задача — только если лента молчит больше суток", () => {
+  const labels = { "genshin-videos-ja": "видео Genshin Impact (YouTube, япон.)" };
+  const video = (consecutive: number, hours: number) => ({ consecutive, since: NOW - hours * 3600, lastError: "ответ 404", lastAttempt: NOW });
+  // Ленты YouTube временами по несколько часов отвечают 404 и оживают сами — это не поломка.
+  assert.deepEqual(planIssues(base({ labels, failures: { "genshin-videos-ja": video(3, 13) } })), []);
+  assert.deepEqual(planIssues(base({ labels, failures: { "genshin-videos-ja": video(4, 25) } })).map((a) => a.type), ["open"]);
+  // Задача, открытая раньше, пока лента молчит меньше суток, не закрывается словами «заработал».
+  assert.deepEqual(planIssues(base({ labels, failures: { "genshin-videos-ja": video(2, 7) }, open: [{ number: 9, key: "source:genshin-videos-ja" }] })), []);
+  // Коды — как раньше: две неудачи подряд, сколько бы часов ни прошло.
+  assert.deepEqual(planIssues(base({ failures: { "wuthering-codes": failure(2) } })).map((a) => a.type), ["open"]);
+});
+
 test("открытая задача — только обновление текста", () => {
   const actions = planIssues(base({ failures: { "wuthering-codes": failure(5) }, open: [{ number: 7, key: "source:wuthering-codes" }] }));
   assert.deepEqual(actions.map((a) => a.type), ["update"]);

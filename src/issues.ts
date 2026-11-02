@@ -7,6 +7,11 @@ import type { Announcement } from "./sources/kuro.ts";
 export const ISSUE_LABEL = "сборщик";
 export const INACTIVITY_DAYS = 45;
 
+/** Источники видео YouTube (`registry.ts`: `${game}-videos-${lang}`). */
+const VIDEO_SOURCE = /-videos-(en|ja)$/;
+/** Сколько лента видео может молчать, прежде чем о ней откроется задача. */
+const VIDEO_ALARM_SECONDS = 24 * 3600;
+
 export interface Failure {
   consecutive: number;
   since: number;
@@ -126,7 +131,11 @@ export function planIssues(input: IssueInputs): IssueAction[] {
   for (const [id, label] of Object.entries(input.labels)) {
     const f = input.failures[id];
     const key = `source:${id}`;
-    if (f && f.consecutive === 1) continue;
+    // Ленты видео YouTube временами по несколько часов отвечают 404 и оживают сами. Задача о
+    // них — только если лента молчит дольше суток; пока меньше, открытая раньше задача остаётся
+    // как есть, а не закрывается словами «заработал».
+    const quietVideos = f !== undefined && VIDEO_SOURCE.test(id) && input.now - f.since < VIDEO_ALARM_SECONDS;
+    if (f && (f.consecutive === 1 || quietVideos)) continue;
     const text = f
       ? [
           `Источник: ${label}`,
